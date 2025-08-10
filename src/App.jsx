@@ -351,92 +351,110 @@ export default function App() {
   }
 
   /* ===== Import CSV — strumieniowo, retry, backoff ===== */
-  async function handleCSVUpload(e) {
-    const file = e.target.files?.[0]
-    if (!file) return
-    if (!importFolderId) {
-      setError('Wybierz folder dla importu.')
-      alert('Najpierw wybierz folder, do którego zaimportuję fiszki.')
-      e.target.value = ''
-      return
-    }
-
-    setLoading(true)
-    setError('')
-    setImportProgress({ running: true, done: 0 })
-
-    // Bezpieczne ustawienia dla środowisk z limitami:
-    let CHUNK = 50        // mniejsze paczki → stabilniej
-    let DELAY_MS = 500    // pauza między paczkami
-
-    let batch = []
-    let processed = 0
-    let parserAborted = false
-
-    const flush = async () => {
-      if (!batch.length) return
-      const toSend = batch
-      batch = []
-      await insertWithRetry(toSend, { maxRetries: 6, baseDelay: 400 })
-      processed += toSend.length
-      setImportProgress({ running: true, done: processed })
-      await sleep(DELAY_MS)
-    }
-
-    try {
-      await new Promise((resolve, reject) => {
-        Papa.parse(file, {
-          header: true,
-          skipEmptyLines: 'greedy',
-          worker: true,
-          // Jeśli masz CSV ze średnikiem, odkomentuj:
-          // delimiter: ';',
-          // Jeśli problem z PL znakami, odkomentuj:
-          // encoding: 'UTF-8',
-          transformHeader: h => (h || '').trim(),
-          step: (results, parser) => {
-            const rec = rowToRecord(results.data, session.user.id, importFolderId)
-            if (rec) batch.push(rec)
-
-            if (batch.length >= CHUNK) {
-              parser.pause()
-              ;(async () => {
-                try {
-                  await flush()
-                  parser.resume()
-                } catch (err) {
-                  parserAborted = true
-                  parser.abort()
-                  reject(err)
-                }
-              })()
-            }
-          },
-          complete: async () => {
-            if (parserAborted) return
-            try {
-              await flush() // reszta < CHUNK
-              resolve(null)
-            } catch (err) {
-              reject(err)
-            }
-          },
-          error: (err) => reject(err)
-        })
-      })
-
-      await fetchCards()
-      alert(`Zaimportowano ${processed} fiszek do wybranego folderu.`)
-    } catch (err) {
-      console.error('CSV import error:', err)
-      setError(err.message || 'Nie udało się zaimportować pliku.')
-      alert('Import przerwany: ' + (err.message || 'nieznany błąd') + '\n\nSpróbuj ponownie: CHUNK=25 i DELAY_MS=700. Upewnij się też, że nagłówki to „Przód” i „Tył”.')
-    } finally {
-      setLoading(false)
-      setImportProgress({ running: false, done: processed })
-      e.target.value = ''
-    }
+async function handleCSVUpload(e) {
+  const file = e.target.files?.[0]
+  if (!file) return
+  if (!importFolderId) {
+    setError('Wybierz folder dla importu.')
+    alert('Najpierw wybierz folder, do którego zaimportuję fiszki.')
+    e.target.value = ''
+    return
   }
+
+  setLoading(true)
+  setError('')
+  setImportProgress({ running: true, done: 0 })
+
+  // Bezpieczne ustawienia dla środowisk z limitami:
+  let CHUNK = 50        // w razie potrzeby zmniejsz do 25
+  let DELAY_MS = 500    // w razie potrzeby zwiększ do 700
+
+  let batch = []
+  let processed = 0
+  let parserAborted = false
+
+  const flush = async () => {
+    if (!batch.length) return
+    const toSend = batch
+    batch = []
+    await insertWithRetry(toSend, { maxRetries: 6, baseDelay: 400 })
+    processed += toSend.length
+    setImportProgress({ running: true, done: processed })
+    await sleep(DELAY_MS)
+  }
+
+  try {
+    await new Promise((resolve, reject) => {
+      Papa.parse(file, {
+        header: true,
+        skipEmptyLines: 'greedy',
+        worker: true,            // zostaje, ale BEZ transformHeader
+        // Jeśli masz CSV ze średnikiem, odkomentuj:
+        // delimiter: ';',
+        // Jeśli problem z PL znakami, spróbuj:
+        // encoding: 'UTF-8',
+        step: (results, parser) => {
+          // >>> ZAMIENNIK transformHeader – przytnij nagłówki po stronie głównego wątku
+          const raw = results.data || {}
+          const r = {}
+          for (const k of Object.keys(raw)) {
+            r[(k || '').trim()] = raw[k]
+          }
+
+          // mapowanie nagłówków: Przód/Przod/front i Tył/Tyl/back
+          const front = (r['Przód'] ?? r['Przod'] ?? r.front ?? '').toString().trim()
+          const back  = (r['Tył']   ?? r['Tyl']   ?? r.back  ?? '').toString().trim()
+
+          if (front && back) {
+            batch.push({
+              id: uuidv4(),
+              user_id: session.user.id,
+              front,
+              back,
+              known: String(r.known || '').toLowerCase() === 'true',
+              folder_id: importFolderId
+            })
+          }
+
+          if (batch.length >= CHUNK) {
+            parser.pause()
+            ;(async () => {
+              try {
+                await flush()
+                parser.resume()
+              } catch (err) {
+                parserAborted = true
+                parser.abort()
+                reject(err)
+              }
+            })()
+          }
+        },
+        complete: async () => {
+          if (parserAborted) return
+          try {
+            await flush() // reszta < CHUNK
+            resolve(null)
+          } catch (err) {
+            reject(err)
+          }
+        },
+        error: (err) => reject(err)
+      })
+    })
+
+    await fetchCards()
+    alert(`Zaimportowano ${processed} fiszek do wybranego folderu.`)
+  } catch (err) {
+    console.error('CSV import error:', err)
+    setError(err.message || 'Nie udało się zaimportować pliku.')
+    alert('Import przerwany: ' + (err.message || 'nieznany błąd') + '\n\nSpróbuj ponownie: CHUNK=25 i DELAY_MS=700. Upewnij się też, że nagłówki to „Przód” i „Tył”.')
+  } finally {
+    setLoading(false)
+    setImportProgress({ running: false, done: processed })
+    e.target.value = ''
+  }
+}
 
   /* ===== Filtrowanie ===== */
   const foldersForSelect = useMemo(() => [{ id: 'ALL', name: 'Wszystkie' }, ...folders], [folders])
