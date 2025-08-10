@@ -67,6 +67,30 @@ function pickVoice(voices, lang) {
   return voices[0]
 }
 
+/* Prosta kontrola współbieżności (mapLimit) */
+async function mapLimit(items, limit, worker) {
+  const ret = []
+  let i = 0
+  const running = new Set()
+  async function runOne() {
+    if (i >= items.length) return
+    const idx = i++
+    const p = (async () => worker(items[idx], idx))()
+    running.add(p)
+    try {
+      const val = await p
+      ret[idx] = val
+    } finally {
+      running.delete(p)
+      await runOne()
+    }
+  }
+  const starters = Math.min(limit, items.length)
+  await Promise.all(Array.from({ length: starters }, runOne))
+  await Promise.all([...running])
+  return ret
+}
+
 export default function App() {
   const [session, setSession] = useState(null)
 
@@ -251,7 +275,7 @@ export default function App() {
     else setCards(prev => prev.filter(c => c.id !== id))
   }
 
-  // ——— Toggle „Zapamiętana” (odklikiwalny, bez restartu auto)
+  // Toggle „Zapamiętana” (odklikiwalny, bez restartu auto)
   async function toggleKnown(card) {
     const next = !card.known
     setCards(prev => prev.map(c => c.id === card.id ? { ...c, known: next } : c))
@@ -370,6 +394,68 @@ export default function App() {
     } finally {
       setLoading(false)
       e.target.value = ''
+    }
+  }
+
+  // ===== GENEROWANIE 30+ (losowe EN + tłumaczenie PL) =====
+  async function fetchRandomWords(n = 30) {
+    const url = `https://random-word-api.vercel.app/api?words=${n}`
+    const res = await fetch(url)
+    if (!res.ok) throw new Error('Błąd pobierania losowych słów')
+    const data = await res.json()
+    return Array.isArray(data) ? data : []
+  }
+
+  async function translateEnToPl(text) {
+    const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=en|pl`
+    const res = await fetch(url)
+    if (!res.ok) throw new Error('Błąd tłumaczenia')
+    const data = await res.json()
+    const t = data?.responseData?.translatedText
+    return (t && typeof t === 'string') ? t : text
+  }
+
+  async function generate30IntoFolder(folder) {
+    if (!folder?.id) return
+    if (!window.confirm(`Dodać ~30 losowych słów do folderu „${folder.name}”?`)) return
+    setLoading(true); setError('')
+    try {
+      const words = await fetchRandomWords(30)
+      // tłumacz z kontrolą współbieżności (np. 4 na raz), by nie zajechać darmowego API
+      const translated = await mapLimit(words, 4, async (w) => {
+        try {
+          const pl = await translateEnToPl(w)
+          return { front: w, back: pl }
+        } catch {
+          return { front: w, back: w } // fallback
+        }
+      })
+      const payload = translated
+        .filter(x => x.front && x.back)
+        .map(x => ({
+          id: uuidv4(),
+          user_id: session.user.id,
+          front: x.front,
+          back: x.back,
+          known: false,
+          folder_id: folder.id
+        }))
+      if (!payload.length) throw new Error('Nie udało się przygotować danych do wstawienia.')
+      // wstaw w kawałkach
+      const chunkSize = 500
+      for (let i = 0; i < payload.length; i += chunkSize) {
+        const chunk = payload.slice(i, i + chunkSize)
+        const { error } = await supabase.from('flashcards').insert(chunk)
+        if (error) throw error
+      }
+      await fetchCards()
+      alert(`Dodano ${payload.length} fiszek do folderu „${folder.name}”.`)
+    } catch (err) {
+      console.error(err)
+      setError(err.message || 'Nie udało się dodać 30+ słów.')
+      alert('Wystąpił błąd podczas dodawania. Spróbuj ponownie za chwilę.')
+    } finally {
+      setLoading(false)
     }
   }
 
@@ -710,13 +796,24 @@ export default function App() {
                 >
                   {f.name}
                 </button>
-                <button
-                  className={`ml-2 px-2 py-1 h-9 rounded-lg border ${activeFolderId===f.id ? 'bg-white/10' : 'hover:bg-white'}`}
-                  onClick={() => deleteFolder(f.id, f.name)}
-                  title="Usuń folder"
-                >
-                  Usuń
-                </button>
+                <div className="flex items-center gap-2">
+                  {/* NOWY PRZYCISK 30+ */}
+                  <button
+                    className={`px-2 py-1 h-9 rounded-lg border ${activeFolderId===f.id ? 'bg-white/10' : 'hover:bg-white'}`}
+                    onClick={() => generate30IntoFolder(f)}
+                    title="Dodaj około 30 losowych słów EN->PL do tego folderu"
+                    disabled={loading}
+                  >
+                    30+
+                  </button>
+                  <button
+                    className={`px-2 py-1 h-9 rounded-lg border ${activeFolderId===f.id ? 'bg-white/10' : 'hover:bg-white'}`}
+                    onClick={() => deleteFolder(f.id, f.name)}
+                    title="Usuń folder"
+                  >
+                    Usuń
+                  </button>
+                </div>
               </li>
             ))}
           </ul>
