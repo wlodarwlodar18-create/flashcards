@@ -29,15 +29,11 @@ function stripDiacritics(s) {
 function detectLang(text) {
   const raw = (text || '').trim()
   if (!raw) return 'en-US'
-
-  // bloki skryptów
   if (/[\u0400-\u04FF]/.test(raw)) return 'ru-RU'
   if (/[\u0600-\u06FF]/.test(raw)) return 'ar-SA'
   if (/[\u4E00-\u9FFF]/.test(raw)) return 'zh-CN'
   if (/[\u3040-\u30FF]/.test(raw)) return 'ja-JP'
   if (/[\uAC00-\uD7AF]/.test(raw)) return 'ko-KR'
-
-  // łacińskie diakrytyki
   if (/[ąćęłńóśźż]/i.test(raw)) return 'pl-PL'
   if (/[äöüß]/i.test(raw)) return 'de-DE'
   if (/[ñáéíóü]/i.test(raw)) return 'es-ES'
@@ -46,7 +42,6 @@ function detectLang(text) {
   if (/[ãõçáéíóú]/i.test(raw)) return 'pt-PT'
   if (/[ğüşıçöİ]/i.test(raw)) return 'tr-TR'
 
-  // heurystyki PL bez ogonków
   const s = stripDiacritics(raw).toLowerCase()
   const plStop = new Set([
     'i','w','na','do','nie','tak','jest','sa','byc','mam','masz','moze','mozna','ktory','ktora','ktore',
@@ -75,9 +70,8 @@ function pickVoice(voices, lang) {
 export default function App() {
   const [session, setSession] = useState(null)
 
-  // logowanie: magic link
+  // logowanie
   const [email, setEmail] = useState('')
-  // logowanie: właściciel (hasło)
   const [ownerEmail, setOwnerEmail] = useState('')
   const [ownerPassword, setOwnerPassword] = useState('')
 
@@ -90,7 +84,7 @@ export default function App() {
   const [shuffleOnLoad, setShuffleOnLoad] = useState(true)
   const [firstLoad, setFirstLoad] = useState(true)
 
-  // TTS języki
+  // TTS języki (UI przeniesione pod „Dodaj fiszkę”)
   const [ttsFrontLang, setTtsFrontLang] = useState('auto')
   const [ttsBackLang, setTtsBackLang] = useState('auto')
 
@@ -103,17 +97,19 @@ export default function App() {
   // dodawanie fiszki
   const [newFront, setNewFront] = useState('')
   const [newBack, setNewBack] = useState('')
-  const [newCardFolderId, setNewCardFolderId] = useState('') // WYMAGANY
+  const [newCardFolderId, setNewCardFolderId] = useState('') // wymagane
 
   // dodawanie folderu
   const [newFolderName, setNewFolderName] = useState('')
 
-  // import CSV (WYMAGANY folder)
+  // import CSV (wymagany folder)
   const [importFolderId, setImportFolderId] = useState('')
 
+  // nauka
   const [reviewIdx, setReviewIdx] = useState(0)
-
-  // flag tłumiący restart auto przy kliknięciu „Zapamiętana”
+  const [autoMode, setAutoMode] = useState(false)
+  const [phaseA, setPhaseA] = useState(7) // przód
+  const [phaseB, setPhaseB] = useState(3) // tył
   const [suppressAutoTick, setSuppressAutoTick] = useState(0)
 
   // Web Speech API — głosy
@@ -125,11 +121,6 @@ export default function App() {
     window.speechSynthesis.onvoiceschanged = load
     return () => { window.speechSynthesis.onvoiceschanged = null }
   }, [])
-
-  // Tryb auto (slidery)
-  const [autoMode, setAutoMode] = useState(false)
-  const [phaseA, setPhaseA] = useState(7) // s — pierwsza strona
-  const [phaseB, setPhaseB] = useState(3) // s — druga strona
 
   // init
   useEffect(() => {
@@ -150,8 +141,8 @@ export default function App() {
       if (storedSide) setSidePref(storedSide)
       if (storedFilter) setShowFilter(storedFilter)
       if (storedShuffle !== null) setShuffleOnLoad(storedShuffle === 'true')
-      if (storedA) setPhaseA(Math.min(15, Math.max(3, Number(storedA) || 7)))
-      if (storedB) setPhaseB(Math.min(10, Math.max(1, Number(storedB) || 3)))
+      if (storedA) setPhaseA(Math.min(15, Math.max(1, Number(storedA) || 7)))
+      if (storedB) setPhaseB(Math.min(15, Math.max(1, Number(storedB) || 3)))
       if (storedFront) setTtsFrontLang(storedFront)
       if (storedBack)  setTtsBackLang(storedBack)
     } catch {}
@@ -260,23 +251,18 @@ export default function App() {
     else setCards(prev => prev.filter(c => c.id !== id))
   }
 
-  // ——— Toggle „Zapamiętana” z tłumieniem restartu auto
+  // ——— Toggle „Zapamiętana” (odklikiwalny, bez restartu auto)
   async function toggleKnown(card) {
     const next = !card.known
-    // zaznacz lokalnie (bez zmiany reviewIdx)
     setCards(prev => prev.map(c => c.id === card.id ? { ...c, known: next } : c))
-    // powiadom Review, żeby NIE restartował auto przez tę zmianę
     setSuppressAutoTick(t => t + 1)
-
     const { error } = await supabase
       .from('flashcards')
       .update({ known: next })
       .eq('id', card.id)
       .eq('user_id', session.user.id)
-
     if (error) {
       setError(error.message)
-      // rollback lokalny
       setCards(prev => prev.map(c => c.id === card.id ? { ...c, known: card.known } : c))
       setSuppressAutoTick(t => t + 1)
     }
@@ -339,7 +325,7 @@ export default function App() {
     })
   }
 
-  // Import CSV — WYMAGA WYBRANIA FOLDERU
+  // Import CSV — wymagany folder
   async function handleCSVUpload(e) {
     const file = e.target.files?.[0]
     if (!file) return
@@ -400,7 +386,7 @@ export default function App() {
     return arr
   }, [cards, activeFolderId, showFilter, q])
 
-  // ===== Tryb nauki — karta + Tryb auto (stabilny, zgodny z „Najpierw”) + tłumienie restartu
+  // ===== Tryb nauki — karta + Tryb auto
   function Review({ autoMode, phaseA, phaseB, ttsFrontLang, ttsBackLang, suppressAutoTick }) {
     const has = filtered.length > 0
     const safeLen = Math.max(1, filtered.length)
@@ -423,7 +409,6 @@ export default function App() {
       else setShowBack(Math.random() < 0.5)
     }, [reviewIdx, sidePref, has])
 
-    // sprzątanie
     useEffect(() => {
       return () => {
         if (timerA.current) clearTimeout(timerA.current)
@@ -435,7 +420,6 @@ export default function App() {
       }
     }, [])
 
-    // TTS
     const speak = (text, isBack) => {
       if (!text || !('speechSynthesis' in window)) return null
       const forced = isBack ? ttsBackLang : ttsFrontLang
@@ -464,7 +448,7 @@ export default function App() {
       setReviewIdx(i => (i + 1) % filtered.length)
     }
 
-    // AUTO: czytaj NAJPIERW wg „Najpierw” → czekaj A → flip + czytaj → czekaj B → następna
+    // AUTO: czytaj wg „Najpierw” → czekaj (Przód) → flip + czytaj → czekaj (Tył) → następna
     useEffect(() => {
       if (!autoMode || !has) return
 
@@ -477,24 +461,21 @@ export default function App() {
       stopAll()
       const myRunId = ++runIdRef.current
 
-      // Wylicz stronę startową:
-      //  front -> false (Przód), back -> true (Tył), random -> losowo co sekwencję
+      // front -> false (Przód), back -> true (Tył), random -> LOSUJ co sekwencję
       const startBack =
         sidePref === 'front' ? false :
         sidePref === 'back'  ? true  :
         Math.random() < 0.5
 
       startSideRef.current = startBack
-      setShowBack(startBack) // upewnij UI
+      setShowBack(startBack)
 
-      // FAZA A — czytamy NAJPIERW zgodnie z preferencją
       const textA = startBack ? card.back : card.front
       speak(textA, startBack)
 
       timerA.current = setTimeout(() => {
         if (runIdRef.current !== myRunId) return
 
-        // FLIP + FAZA B — czytamy drugą stronę
         const flippedBack = !startBack
         setShowBack(flippedBack)
         const textB = flippedBack ? card.back : card.front
@@ -508,7 +489,6 @@ export default function App() {
       }, Math.max(1, phaseA) * 1000)
 
       return () => stopAll()
-      // zależności: brak showBack; reagujemy na zmianę preferencji, listy, indeksu, czasów, języków i tłumienia
     }, [autoMode, reviewIdx, filtered, phaseA, phaseB, ttsFrontLang, ttsBackLang, has, sidePref, suppressAutoTick])
 
     if (!has) return <p className="text-sm text-gray-500">Brak fiszek do przeglądu.</p>
@@ -563,47 +543,6 @@ export default function App() {
             Czytaj
           </button>
 
-          {/* Języki TTS dla przodu/tyłu */}
-          <div className="flex items-center gap-2 bg-white rounded-xl border px-3 py-2">
-            <span className="text-sm">Język (Przód):</span>
-            <select
-              className="border rounded-lg px-2 py-1 h-9"
-              value={ttsFrontLang}
-              onChange={(e)=>setTtsFrontLang(e.target.value)}
-              title="Wymuś język czytania dla przodu"
-            >
-              <option value="auto">Auto</option>
-              <option value="pl-PL">Polski (pl-PL)</option>
-              <option value="en-US">English (en-US)</option>
-              <option value="de-DE">Deutsch (de-DE)</option>
-              <option value="es-ES">Español (es-ES)</option>
-              <option value="fr-FR">Français (fr-FR)</option>
-              <option value="it-IT">Italiano (it-IT)</option>
-              <option value="pt-PT">Português (pt-PT)</option>
-              <option value="tr-TR">Türkçe (tr-TR)</option>
-            </select>
-          </div>
-
-          <div className="flex items-center gap-2 bg-white rounded-xl border px-3 py-2">
-            <span className="text-sm">Język (Tył):</span>
-            <select
-              className="border rounded-lg px-2 py-1 h-9"
-              value={ttsBackLang}
-              onChange={(e)=>setTtsBackLang(e.target.value)}
-              title="Wymuś język czytania dla tyłu"
-            >
-              <option value="auto">Auto</option>
-              <option value="pl-PL">Polski (pl-PL)</option>
-              <option value="en-US">English (en-US)</option>
-              <option value="de-DE">Deutsch (de-DE)</option>
-              <option value="es-ES">Español (es-ES)</option>
-              <option value="fr-FR">Français (fr-FR)</option>
-              <option value="it-IT">Italiano (it-IT)</option>
-              <option value="pt-PT">Português (pt-PT)</option>
-              <option value="tr-TR">Türkçe (tr-TR)</option>
-            </select>
-          </div>
-
           <button
             className={`px-3 py-2 rounded-xl ${autoMode ? 'bg-amber-600 text-white hover:bg-amber-500' : 'bg-amber-100 hover:bg-amber-200 text-amber-900'}`}
             onClick={() => {
@@ -615,7 +554,6 @@ export default function App() {
             {autoMode ? 'Stop (Tryb auto)' : 'Tryb auto'}
           </button>
 
-          {/* Przełącznik „Zapamiętana” — nie uruchamia czytania, odklikiwalny */}
           <button
             className={`px-3 py-2 rounded-xl ${card.known ? 'bg-emerald-600 text-white' : 'bg-gray-200 text-black hover:bg-gray-300'}`}
             onClick={() => toggleKnown(card)}
@@ -625,13 +563,13 @@ export default function App() {
           </button>
         </div>
 
-        {/* Suwaki czasu */}
+        {/* Suwaki czasu — równy zakres 1–15 s */}
         <div className="mt-4 grid sm:grid-cols-2 gap-4 bg-white/60 rounded-xl p-3 border">
           <div>
-            <label className="text-sm font-medium">Faza 1 — pierwsza strona (sekundy)</label>
+            <label className="text-sm font-medium">Przód (sekundy)</label>
             <input
               type="range"
-              min={3}
+              min={1}
               max={15}
               step={1}
               value={phaseA}
@@ -641,11 +579,11 @@ export default function App() {
             <div className="text-xs text-gray-600 mt-1">Aktualnie: {phaseA}s</div>
           </div>
           <div>
-            <label className="text-sm font-medium">Faza 2 — druga strona (sekundy)</label>
+            <label className="text-sm font-medium">Tył (sekundy)</label>
             <input
               type="range"
               min={1}
-              max={10}
+              max={15}
               step={1}
               value={phaseB}
               onChange={(e)=>{ setAutoMode(false); setPhaseB(Number(e.target.value)) }}
@@ -739,7 +677,7 @@ export default function App() {
           </div>
         </header>
 
-        {/* Foldery: dodawanie + lista (z usuwaniem) */}
+        {/* Foldery */}
         <section className="mt-6 bg-white rounded-2xl shadow p-4">
           <h2 className="font-semibold mb-3">Foldery</h2>
           <form onSubmit={addFolder} className="flex flex-col sm:flex-row gap-2 sm:items-center">
@@ -832,6 +770,52 @@ export default function App() {
               {!importFolderId && (
                 <p className="text-xs text-red-600 mt-1">Wybór folderu jest wymagany, aby wczytać plik.</p>
               )}
+            </div>
+
+            {/* >>> Języki czytania przeniesione tutaj <<< */}
+            <div className="mt-5 bg-white rounded-xl border p-3">
+              <p className="text-sm font-medium mb-2">Czytanie na głos — język</p>
+              <div className="grid sm:grid-cols-2 gap-3">
+                <label className="flex items-center justify-between gap-2">
+                  <span className="text-sm">Przód:</span>
+                  <select
+                    className="border rounded-lg px-2 py-1 h-9"
+                    value={ttsFrontLang}
+                    onChange={(e)=>setTtsFrontLang(e.target.value)}
+                    title="Wymuś język czytania dla przodu"
+                  >
+                    <option value="auto">Auto</option>
+                    <option value="pl-PL">Polski (pl-PL)</option>
+                    <option value="en-US">English (en-US)</option>
+                    <option value="de-DE">Deutsch (de-DE)</option>
+                    <option value="es-ES">Español (es-ES)</option>
+                    <option value="fr-FR">Français (fr-FR)</option>
+                    <option value="it-IT">Italiano (it-IT)</option>
+                    <option value="pt-PT">Português (pt-PT)</option>
+                    <option value="tr-TR">Türkçe (tr-TR)</option>
+                  </select>
+                </label>
+
+                <label className="flex items-center justify-between gap-2">
+                  <span className="text-sm">Tył:</span>
+                  <select
+                    className="border rounded-lg px-2 py-1 h-9"
+                    value={ttsBackLang}
+                    onChange={(e)=>setTtsBackLang(e.target.value)}
+                    title="Wymuś język czytania dla tyłu"
+                  >
+                    <option value="auto">Auto</option>
+                    <option value="pl-PL">Polski (pl-PL)</option>
+                    <option value="en-US">English (en-US)</option>
+                    <option value="de-DE">Deutsch (de-DE)</option>
+                    <option value="es-ES">Español (es-ES)</option>
+                    <option value="fr-FR">Français (fr-FR)</option>
+                    <option value="it-IT">Italiano (it-IT)</option>
+                    <option value="pt-PT">Português (pt-PT)</option>
+                    <option value="tr-TR">Türkçe (tr-TR)</option>
+                  </select>
+                </label>
+              </div>
             </div>
 
             {loading && <p className="text-sm text-gray-600 mt-2">Pracuję…</p>}
