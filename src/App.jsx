@@ -457,7 +457,7 @@ export default function App() {
 
     // FAZA A — czytamy to, co jest AKTUALNIE widoczne
     const isBackA = startSideRef.current
-    const textA = isBackA ? card.back : card.front
+    const textA = isBackA ? card.front : card.back
     speak(textA, isBackA)
 
     // czekamy A sekund (bez zależności od showBack)
@@ -468,7 +468,7 @@ export default function App() {
       // FLIP + FAZA B — czytamy drugą stronę
       setShowBack(prev => !prev) // UI flip
       const isBackB = !startSideRef.current
-      const textB = isBackB ? card.back : card.front
+      const textB = isBackB ? card.front : card.back
       speak(textB, isBackB)
 
       timerB.current = setTimeout(() => {
