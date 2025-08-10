@@ -8,6 +8,16 @@ const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || ''
 const supabaseAnon = import.meta.env.VITE_SUPABASE_ANON_KEY || ''
 const supabase = createClient(supabaseUrl, supabaseAnon)
 
+/* Fisher–Yates shuffle */
+function shuffle(arr) {
+  const a = [...arr]
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[a[i], a[j]] = [a[j], a[i]]
+  }
+  return a
+}
+
 export default function App() {
   const [session, setSession] = useState(null)
   const [email, setEmail] = useState('')
@@ -17,11 +27,13 @@ export default function App() {
   // preferencje i filtry
   const [showFilter, setShowFilter] = useState('unknown') // 'all' | 'known' | 'unknown'
   const [sidePref, setSidePref] = useState('front') // 'front' | 'back' | 'random'
+  const [shuffleOnLoad, setShuffleOnLoad] = useState(true)
+  const [firstLoad, setFirstLoad] = useState(true)
 
   // dane
   const [cards, setCards] = useState([])
   const [folders, setFolders] = useState([])
-  const [activeFolderId, setActiveFolderId] = useState('ALL') // filtr folderu
+  const [activeFolderId, setActiveFolderId] = useState('ALL')
   const [q, setQ] = useState('')
 
   // dodawanie fiszki
@@ -48,8 +60,10 @@ export default function App() {
     try {
       const storedSide = localStorage.getItem('sidePref')
       const storedFilter = localStorage.getItem('showFilter')
+      const storedShuffle = localStorage.getItem('shuffleOnLoad')
       if (storedSide) setSidePref(storedSide)
       if (storedFilter) setShowFilter(storedFilter)
+      if (storedShuffle !== null) setShuffleOnLoad(storedShuffle === 'true')
     } catch {}
     init()
   }, [])
@@ -63,8 +77,9 @@ export default function App() {
     try {
       localStorage.setItem('sidePref', sidePref)
       localStorage.setItem('showFilter', showFilter)
+      localStorage.setItem('shuffleOnLoad', String(shuffleOnLoad))
     } catch {}
-  }, [sidePref, showFilter])
+  }, [sidePref, showFilter, shuffleOnLoad])
 
   // ===== API
   async function fetchFolders() {
@@ -87,7 +102,15 @@ export default function App() {
       .eq('user_id', session.user.id)
       .order('created_at', { ascending: false })
     if (error) setError(error.message)
-    else setCards(data || [])
+    else {
+      let list = data || []
+      if (firstLoad && shuffleOnLoad) {
+        list = shuffle(list)
+        setFirstLoad(false)
+      }
+      setCards(list)
+      setReviewIdx(0)
+    }
     setLoading(false)
   }
 
@@ -102,12 +125,7 @@ export default function App() {
   }
 
   async function addCard(front, back, folderId) {
-    const payload = {
-      id: uuidv4(),
-      user_id: session.user.id,
-      front, back,
-      folder_id: folderId || null
-    }
+    const payload = { id: uuidv4(), user_id: session.user.id, front, back, folder_id: folderId || null }
     const { error } = await supabase.from('flashcards').insert(payload)
     if (error) throw error
   }
@@ -214,10 +232,7 @@ export default function App() {
           const back  = (r.back || '').toString().trim()
           const fname = (r.folder_name || '').toString().trim()
           const known = String(r.known || '').toLowerCase() === 'true'
-          return {
-            front, back, known,
-            folder_id: fname ? nameToId.get(fname) || null : null
-          }
+          return { front, back, known, folder_id: fname ? nameToId.get(fname) || null : null }
         })
         .filter(r => r.front && r.back)
 
@@ -252,84 +267,63 @@ export default function App() {
     return arr
   }, [cards, activeFolderId, showFilter, q])
 
-  // ===== Tryb nauki
+  // ===== Tryb nauki — bez animacji, pastelowe kolory
   function Review() {
-  const has = filtered.length > 0
-  const safeLen = Math.max(1, filtered.length)
-  const card = filtered[reviewIdx % safeLen]
-  const [showBack, setShowBack] = useState(false)
+    const has = filtered.length > 0
+    const safeLen = Math.max(1, filtered.length)
+    const card = filtered[reviewIdx % safeLen]
+    const [showBack, setShowBack] = useState(false)
 
-  // ustaw startową stronę zgodnie z preferencją (front/back/losowo)
-  useEffect(() => {
-    if (!has) return
-    if (sidePref === 'front') setShowBack(false)
-    else if (sidePref === 'back') setShowBack(true)
-    else setShowBack(Math.random() < 0.5) // random
-  }, [reviewIdx, sidePref, has])
+    // ustaw startową stronę zgodnie z sidePref
+    useEffect(() => {
+      if (!has) return
+      if (sidePref === 'front') setShowBack(false)
+      else if (sidePref === 'back') setShowBack(true)
+      else setShowBack(Math.random() < 0.5) // random
+    }, [reviewIdx, sidePref, has])
 
-  if (!has) return <p className="text-sm text-gray-500">Brak fiszek do przeglądu.</p>
+    if (!has) return <p className="text-sm text-gray-500">Brak fiszek do przeglądu.</p>
 
-  // pastelowe kolory i delikatne obramowanie
-  const containerClasses =
-    `w-full rounded-2xl shadow p-6 min-h-[160px] flex items-center justify-center text-center border 
-     ${showBack ? 'bg-sky-50 border-sky-200' : 'bg-emerald-50 border-emerald-200'}`
+    const containerClasses =
+      `w-full rounded-2xl shadow p-6 min-h-[160px] flex items-center justify-center text-center border 
+       ${showBack ? 'bg-sky-50 border-sky-200' : 'bg-emerald-50 border-emerald-200'}`
 
-  const badgeClasses =
-    `absolute top-3 right-3 text-xs px-2 py-1 rounded-full border 
-     ${showBack ? 'bg-sky-100 border-sky-200 text-sky-800' : 'bg-emerald-100 border-emerald-200 text-emerald-800'}`
+    const badgeClasses =
+      `absolute top-3 right-3 text-xs px-2 py-1 rounded-full border 
+       ${showBack ? 'bg-sky-100 border-sky-200 text-sky-800' : 'bg-emerald-100 border-emerald-200 text-emerald-800'}`
 
-  return (
-    <div className="mt-6">
-      <div className="flex items-center justify-between mb-2">
-        <span className="text-xs text-gray-500">
-          {(reviewIdx % filtered.length) + 1} / {filtered.length}
-        </span>
-        <div className="flex items-center gap-2">
-          <button
-            className="text-xs underline"
-            onClick={() => setReviewIdx(i => (i + 1) % filtered.length)}
-          >
-            Następna →
-          </button>
-          <button
-            className="text-xs underline"
-            onClick={() => toggleKnown(card)}
-          >
-            {card.known ? 'Oznacz jako NIEznaną' : 'Oznacz jako zapamiętaną'}
-          </button>
+    return (
+      <div className="mt-6">
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-xs text-gray-500">
+            {(reviewIdx % filtered.length) + 1} / {filtered.length}
+          </span>
+          <div className="flex items-center gap-2">
+            <button className="text-xs underline" onClick={() => setReviewIdx(i => (i + 1) % filtered.length)}>Następna →</button>
+            <button className="text-xs underline" onClick={() => toggleKnown(card)}>
+              {card.known ? 'Oznacz jako NIEznaną' : 'Oznacz jako zapamiętaną'}
+            </button>
+          </div>
         </div>
-      </div>
 
-      {/* prosty blok bez animacji obrotu, kliknięcie przełącza front/back */}
-      <div
-        className={`${containerClasses} relative cursor-pointer`}
-        onClick={() => setShowBack(!showBack)}
-        title="Kliknij, aby przełączyć front/back"
-      >
-        <span className={badgeClasses}>{showBack ? 'Back' : 'Front'}</span>
-        <div className="text-xl leading-relaxed max-w-[95%]">
-          {showBack ? card.back : card.front}
-        </div>
-      </div>
-
-      <div className="flex gap-2 mt-4">
-        <button
-          className="px-3 py-2 rounded-xl bg-gray-100 hover:bg-gray-200"
-          onClick={() => setReviewIdx(i => (i + 1) % filtered.length)}
-        >
-          Następna
-        </button>
-        <button
-          className="px-3 py-2 rounded-xl bg-gray-100 hover:bg-gray-200"
+        <div
+          className={`${containerClasses} relative cursor-pointer`}
           onClick={() => setShowBack(s => !s)}
+          title="Kliknij, aby przełączyć front/back"
         >
-          {showBack ? 'Pokaż front' : 'Pokaż back'}
-        </button>
-      </div>
-    </div>
-  )
-}
+          <span className={badgeClasses}>{showBack ? 'Back' : 'Front'}</span>
+          <div className="text-xl leading-relaxed max-w-[95%]">
+            {showBack ? card.back : card.front}
+          </div>
+        </div>
 
+        <div className="flex gap-2 mt-4">
+          <button className="px-3 py-2 rounded-xl bg-gray-100 hover:bg-gray-200" onClick={() => setReviewIdx(i => (i + 1) % filtered.length)}>Następna</button>
+          <button className="px-3 py-2 rounded-xl bg-gray-100 hover:bg-gray-200" onClick={() => setShowBack(s => !s)}>{showBack ? 'Pokaż front' : 'Pokaż back'}</button>
+        </div>
+      </div>
+    )
+  }
 
   if (!session) {
     return (
@@ -384,6 +378,20 @@ export default function App() {
                 <option value="back">back</option>
                 <option value="random">losowo</option>
               </select>
+            </div>
+            <div className="text-sm bg-white rounded-xl shadow px-3 py-2 flex items-center gap-3">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" checked={shuffleOnLoad} onChange={(e)=>setShuffleOnLoad(e.target.checked)} />
+                Losuj przy starcie
+              </label>
+              <button
+                type="button"
+                className="px-3 py-1 rounded-lg border hover:bg-gray-50"
+                onClick={() => { setCards(prev => shuffle(prev)); setReviewIdx(0) }}
+                title="Przetasuj aktualną listę fiszek"
+              >
+                Tasuj teraz
+              </button>
             </div>
             <div className="text-sm bg-white rounded-xl shadow px-3 py-2 flex items-center gap-2">
               <span>Folder:</span>
@@ -454,9 +462,7 @@ export default function App() {
                   <div className="flex-1">
                     <p className="font-medium">{card.front}</p>
                     <p className="text-sm text-gray-600 mt-1">{card.back}</p>
-                    <p className="text-xs text-gray-500 mt-1">
-                      {card.known ? '✅ Zapamiętana' : '🕑 Do nauki'}
-                    </p>
+                    <p className="text-xs text-gray-500 mt-1">{card.known ? '✅ Zapamiętana' : '🕑 Do nauki'}</p>
                   </div>
                   <div className="flex items-center gap-2">
                     <label className="text-xs flex items-center gap-1">
