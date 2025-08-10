@@ -113,6 +113,9 @@ export default function App() {
 
   const [reviewIdx, setReviewIdx] = useState(0)
 
+  // flag tłumiący restart auto przy kliknięciu „Zapamiętana”
+  const [suppressAutoTick, setSuppressAutoTick] = useState(0)
+
   // Web Speech API — głosy
   const [voices, setVoices] = useState([])
   useEffect(() => {
@@ -257,23 +260,32 @@ export default function App() {
     else setCards(prev => prev.filter(c => c.id !== id))
   }
 
+  // ——— Toggle „Zapamiętana” z tłumieniem restartu auto
   async function toggleKnown(card) {
     const next = !card.known
+    // zaznacz lokalnie (bez zmiany reviewIdx)
     setCards(prev => prev.map(c => c.id === card.id ? { ...c, known: next } : c))
+    // powiadom Review, żeby NIE restartował auto przez tę zmianę
+    setSuppressAutoTick(t => t + 1)
+
     const { error } = await supabase
       .from('flashcards')
       .update({ known: next })
       .eq('id', card.id)
       .eq('user_id', session.user.id)
+
     if (error) {
       setError(error.message)
+      // rollback lokalny
       setCards(prev => prev.map(c => c.id === card.id ? { ...c, known: card.known } : c))
+      setSuppressAutoTick(t => t + 1)
     }
   }
 
   async function markKnown(card) {
     if (card.known) return
     setCards(prev => prev.map(c => c.id === card.id ? { ...c, known: true } : c))
+    setSuppressAutoTick(t => t + 1)
     const { error } = await supabase
       .from('flashcards')
       .update({ known: true })
@@ -282,6 +294,7 @@ export default function App() {
     if (error) {
       setError(error.message)
       setCards(prev => prev.map(c => c.id === card.id ? { ...c, known: false } : c))
+      setSuppressAutoTick(t => t + 1)
     }
   }
 
@@ -387,8 +400,8 @@ export default function App() {
     return arr
   }, [cards, activeFolderId, showFilter, q])
 
-  // ===== Tryb nauki — karta + Tryb auto (stabilny, zgodny z „Najpierw”)
-  function Review({ autoMode, onStopAuto, phaseA, phaseB, ttsFrontLang, ttsBackLang }) {
+  // ===== Tryb nauki — karta + Tryb auto (stabilny, zgodny z „Najpierw”) + tłumienie restartu
+  function Review({ autoMode, phaseA, phaseB, ttsFrontLang, ttsBackLang, suppressAutoTick }) {
     const has = filtered.length > 0
     const safeLen = Math.max(1, filtered.length)
     const card = filtered[reviewIdx % safeLen]
@@ -400,6 +413,7 @@ export default function App() {
     const nextBtnRef = useRef(null)
     const runIdRef = useRef(0)
     const startSideRef = useRef(null)
+    const lastSuppressRef = useRef(suppressAutoTick)
 
     // startowa strona wg preferencji przy każdej nowej karcie
     useEffect(() => {
@@ -454,15 +468,21 @@ export default function App() {
     useEffect(() => {
       if (!autoMode || !has) return
 
+      // jeżeli przyczyną rerenderu był toggle „Zapamiętana”, pomiń ten cykl
+      if (lastSuppressRef.current !== suppressAutoTick) {
+        lastSuppressRef.current = suppressAutoTick
+        return
+      }
+
       stopAll()
       const myRunId = ++runIdRef.current
 
-      // Wylicz stronę startową na podstawie preferencji:
-      // front -> false (Przód), back -> true (Tył), random -> LOSUJ przy każdym starcie sekwencji
-  const startBack =
-    sidePref === 'front' ? false :
-    sidePref === 'back'  ? true  :
-    Math.random() < 0.5
+      // Wylicz stronę startową:
+      //  front -> false (Przód), back -> true (Tył), random -> losowo co sekwencję
+      const startBack =
+        sidePref === 'front' ? false :
+        sidePref === 'back'  ? true  :
+        Math.random() < 0.5
 
       startSideRef.current = startBack
       setShowBack(startBack) // upewnij UI
@@ -488,8 +508,8 @@ export default function App() {
       }, Math.max(1, phaseA) * 1000)
 
       return () => stopAll()
-      // ważne: zależymy od sidePref (żeby reagować na zmianę „Najpierw”)
-    }, [autoMode, reviewIdx, filtered, phaseA, phaseB, ttsFrontLang, ttsBackLang, has, sidePref]) // NIE dodajemy showBack
+      // zależności: brak showBack; reagujemy na zmianę preferencji, listy, indeksu, czasów, języków i tłumienia
+    }, [autoMode, reviewIdx, filtered, phaseA, phaseB, ttsFrontLang, ttsBackLang, has, sidePref, suppressAutoTick])
 
     if (!has) return <p className="text-sm text-gray-500">Brak fiszek do przeglądu.</p>
 
@@ -595,13 +615,13 @@ export default function App() {
             {autoMode ? 'Stop (Tryb auto)' : 'Tryb auto'}
           </button>
 
+          {/* Przełącznik „Zapamiętana” — nie uruchamia czytania, odklikiwalny */}
           <button
-            className="px-3 py-2 rounded-xl bg-emerald-600 text-white disabled:opacity-50"
-            onClick={() => markKnown(card)}
-            disabled={!!card.known}
-            title={card.known ? 'Już zapamiętana' : 'Oznacz tę fiszkę jako zapamiętaną'}
+            className={`px-3 py-2 rounded-xl ${card.known ? 'bg-emerald-600 text-white' : 'bg-gray-200 text-black hover:bg-gray-300'}`}
+            onClick={() => toggleKnown(card)}
+            title="Przełącz status zapamiętania tej fiszki"
           >
-            Zapamiętana
+            {card.known ? 'Zapamiętana' : 'Zapamiętaj'}
           </button>
         </div>
 
@@ -643,7 +663,7 @@ export default function App() {
       <main className="min-h-screen bg-gradient-to-b from-slate-50 to-slate-100 flex items-center justify-center p-4">
         <div className="max-w-md w-full bg-white rounded-2xl shadow-xl p-6">
           <h1 className="text-2xl font-bold">Fiszki – logowanie</h1>
-        <p className="text-sm text-gray-600 mt-2">Podaj e-mail (magic link) albo zaloguj hasłem właściciela.</p>
+          <p className="text-sm text-gray-600 mt-2">Podaj e-mail (magic link) albo zaloguj hasłem właściciela.</p>
 
           {/* Magic link */}
           <form onSubmit={signInWithEmail} className="mt-4 space-y-3">
@@ -824,11 +844,11 @@ export default function App() {
             <input className="w-full border rounded-xl px-3 h-10 mb-3" placeholder="Szukaj w fiszkach…" value={q} onChange={e => setQ(e.target.value)} />
             <Review
               autoMode={autoMode}
-              onStopAuto={() => setAutoMode(false)}
               phaseA={phaseA}
               phaseB={phaseB}
               ttsFrontLang={ttsFrontLang}
               ttsBackLang={ttsBackLang}
+              suppressAutoTick={suppressAutoTick}
             />
           </div>
         </section>
