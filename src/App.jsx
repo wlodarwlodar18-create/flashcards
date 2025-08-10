@@ -18,26 +18,26 @@ function shuffle(arr) {
   return a
 }
 
-/* Usuwanie diakrytyków (np. ą→a) */
+/* Usuwanie diakrytyków */
 function stripDiacritics(s) {
   return (s || '')
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
 }
 
-/* Heurystyczne wykrywanie języka + polskie wzorce bez ogonków */
+/* Heurystyczne wykrywanie języka + PL bez ogonków */
 function detectLang(text) {
   const raw = (text || '').trim()
   if (!raw) return 'en-US'
 
-  // Skrypty
+  // bloki skryptów
   if (/[\u0400-\u04FF]/.test(raw)) return 'ru-RU'
   if (/[\u0600-\u06FF]/.test(raw)) return 'ar-SA'
   if (/[\u4E00-\u9FFF]/.test(raw)) return 'zh-CN'
   if (/[\u3040-\u30FF]/.test(raw)) return 'ja-JP'
   if (/[\uAC00-\uD7AF]/.test(raw)) return 'ko-KR'
 
-  // Diakrytyki łacińskie
+  // łacińskie diakrytyki
   if (/[ąćęłńóśźż]/i.test(raw)) return 'pl-PL'
   if (/[äöüß]/i.test(raw)) return 'de-DE'
   if (/[ñáéíóúü]/i.test(raw)) return 'es-ES'
@@ -46,29 +46,23 @@ function detectLang(text) {
   if (/[ãõçáéíóú]/i.test(raw)) return 'pt-PT'
   if (/[ğüşıçöİ]/i.test(raw)) return 'tr-TR'
 
-  // Heurystyka PL bez ogonków (mocniejsza)
+  // heurystyki PL bez ogonków
   const s = stripDiacritics(raw).toLowerCase()
   const plStop = new Set([
     'i','w','na','do','nie','tak','jest','sa','byc','mam','masz','moze','mozna','ktory','ktora','ktore',
     'zeby','albo','czy','dlaczego','poniewaz','przez','ten','ta','to','te','tam','tutaj','taki','takie',
     'bardziej','mniej','bardzo','troche','jesli','gdy','kiedy','z','za','po','od','bez','dla','przed',
-    'tojest','jak','co','kto','gdzie','kiedy','dlaczego'
+    'jak','co','kto','gdzie','kiedy','dlaczego'
   ])
   const tokens = s.split(/[^a-zA-Z]+/).filter(Boolean)
   let plHits = 0
   for (const t of tokens) if (plStop.has(t)) plHits++
-
-  // typowe dwuznaki i końcówki fleksyjne
-  const digraphs = (s.match(/rz|sz|cz|dz|dzw|ch|nia|owie|ami|ego|emu|ach|cie|osci|alny|owy|owym|owie|ami|ami|cie|scy|liscie/gi) || []).length
-
-  // dodatkowe sygnały: 'szcz', zakończenia -ować, -anie, -enie, -owy
-  const endings = (s.match(/owac|anie|enie|owy|ami|owej|owego|nych|nymi|emu|cie|ciez|szcz/gi) || []).length
-
-  if (plHits >= 2 || digraphs >= 2 || endings >= 1) return 'pl-PL'
+  const digraphs = (s.match(/rz|sz|cz|dz|dzw|ch|nia|owie|ami|ego|emu|ach|cie|osci|owy|owac|anie|enie/gi) || []).length
+  if (plHits >= 2 || digraphs >= 2) return 'pl-PL'
   return 'en-US'
 }
 
-/* Dobór głosu do języka */
+/* Dobór głosu */
 function pickVoice(voices, lang) {
   if (!voices || !voices.length) return null
   const exact = voices.find(v => v.lang?.toLowerCase() === lang.toLowerCase())
@@ -90,8 +84,9 @@ export default function App() {
   const [shuffleOnLoad, setShuffleOnLoad] = useState(true)
   const [firstLoad, setFirstLoad] = useState(true)
 
-  // TTS override (Auto domyślnie)
-  const [ttsLang, setTtsLang] = useState('auto') // 'auto' | 'pl-PL' | 'en-US' | ...
+  // TTS języki
+  const [ttsFrontLang, setTtsFrontLang] = useState('auto')
+  const [ttsBackLang, setTtsBackLang] = useState('auto')
 
   // dane
   const [cards, setCards] = useState([])
@@ -107,10 +102,10 @@ export default function App() {
   // dodawanie folderu
   const [newFolderName, setNewFolderName] = useState('')
 
-  // import CSV → WYBRANY FOLDER (WYMAGANY)
+  // import CSV (WYMAGANY folder)
   const [importFolderId, setImportFolderId] = useState('')
 
-  // owner-login (opcjonalnie)
+  // login owner
   const [ownerEmail, setOwnerEmail] = useState('')
   const [ownerPassword, setOwnerPassword] = useState('')
 
@@ -128,8 +123,8 @@ export default function App() {
 
   // Tryb auto (slidery)
   const [autoMode, setAutoMode] = useState(false)
-  const [phaseA, setPhaseA] = useState(7) // sekundy — pierwsza strona
-  const [phaseB, setPhaseB] = useState(3) // sekundy — druga strona
+  const [phaseA, setPhaseA] = useState(7) // s — pierwsza strona
+  const [phaseB, setPhaseB] = useState(3) // s — druga strona
 
   // init
   useEffect(() => {
@@ -139,19 +134,20 @@ export default function App() {
       supabase.auth.onAuthStateChange((_e, s) => setSession(s))
     }
     try {
-      const ls = (k, d) => localStorage.getItem(k) ?? d
       const storedSide = localStorage.getItem('sidePref')
       const storedFilter = localStorage.getItem('showFilter')
       const storedShuffle = localStorage.getItem('shuffleOnLoad')
       const storedA = localStorage.getItem('phaseA')
       const storedB = localStorage.getItem('phaseB')
-      const storedTts = localStorage.getItem('ttsLang')
+      const storedFront = localStorage.getItem('ttsFrontLang')
+      const storedBack = localStorage.getItem('ttsBackLang')
       if (storedSide) setSidePref(storedSide)
       if (storedFilter) setShowFilter(storedFilter)
       if (storedShuffle !== null) setShuffleOnLoad(storedShuffle === 'true')
       if (storedA) setPhaseA(Math.min(15, Math.max(3, Number(storedA) || 7)))
       if (storedB) setPhaseB(Math.min(10, Math.max(1, Number(storedB) || 3)))
-      setTtsLang(storedTts || 'auto')
+      if (storedFront) setTtsFrontLang(storedFront)
+      if (storedBack)  setTtsBackLang(storedBack)
     } catch {}
     init()
   }, [])
@@ -168,9 +164,10 @@ export default function App() {
       localStorage.setItem('shuffleOnLoad', String(shuffleOnLoad))
       localStorage.setItem('phaseA', String(phaseA))
       localStorage.setItem('phaseB', String(phaseB))
-      localStorage.setItem('ttsLang', ttsLang)
+      localStorage.setItem('ttsFrontLang', ttsFrontLang)
+      localStorage.setItem('ttsBackLang', ttsBackLang)
     } catch {}
-  }, [sidePref, showFilter, shuffleOnLoad, phaseA, phaseB, ttsLang])
+  }, [sidePref, showFilter, shuffleOnLoad, phaseA, phaseB, ttsFrontLang, ttsBackLang])
 
   // ===== API
   async function fetchFolders() {
@@ -384,19 +381,23 @@ export default function App() {
     return arr
   }, [cards, activeFolderId, showFilter, q])
 
-  // ===== Tryb nauki — karta + Tryb auto (slidery)
-  function Review({ autoMode, onStopAuto, phaseA, phaseB }) {
+  // ===== Tryb nauki — karta + Tryb auto (ciągła pętla)
+  function Review({ autoMode, onStopAuto, phaseA, phaseB, ttsFrontLang, ttsBackLang }) {
     const has = filtered.length > 0
     const safeLen = Math.max(1, filtered.length)
+    theCardCheck()
     const card = filtered[reviewIdx % safeLen]
     const [showBack, setShowBack] = useState(false)
 
-    // timery i mowa
     const timerA = useRef(null) // faza A
     const timerB = useRef(null) // faza B
     const utterRef = useRef(null)
 
-    // startowa strona wg preferencji przy każdej karcie
+    function theCardCheck() {
+      // nic — placeholder by uniknąć lintera przy inline definicji card
+    }
+
+    // Ustaw startową stronę przy każdej nowej karcie wg preferencji
     useEffect(() => {
       if (!has) return
       if (sidePref === 'front') setShowBack(false)
@@ -404,7 +405,7 @@ export default function App() {
       else setShowBack(Math.random() < 0.5)
     }, [reviewIdx, sidePref, has])
 
-    // sprzątanie
+    // Sprzątanie
     useEffect(() => {
       return () => {
         if (timerA.current) clearTimeout(timerA.current)
@@ -413,10 +414,11 @@ export default function App() {
       }
     }, [])
 
-    const speak = (text) => {
+    const speak = (text, isBack) => {
       if (!text) return null
       if (!('speechSynthesis' in window)) return null
-      const lang = ttsLang !== 'auto' ? ttsLang : detectLang(text)
+      const forced = isBack ? ttsBackLang : ttsFrontLang
+      const lang = forced !== 'auto' ? forced : detectLang(text)
       const voice = pickVoice(voices, lang)
       const u = new SpeechSynthesisUtterance(text)
       u.lang = lang
@@ -427,41 +429,47 @@ export default function App() {
       return u
     }
 
-    // LOGIKA TRYBU AUTO — CIĄGŁA PĘTLA:
-    // - faza A (phaseA s): czytaj aktualną stronę
-    // - faza B (phaseB s): flip, czytaj drugą stronę
-    // - automatycznie przejdź do następnej i znów uruchom A→B, w kółko aż do Stop
+    const stopTimersAndSpeech = () => {
+      if (timerA.current) clearTimeout(timerA.current)
+      if (timerB.current) clearTimeout(timerB.current)
+      timerA.current = null
+      timerB.current = null
+      window.speechSynthesis?.cancel?.()
+    }
+
+    const gotoNextNow = () => {
+      stopTimersAndSpeech()
+      setReviewIdx(i => (i + 1) % filtered.length)
+    }
+
+    // LOGIKA TRYBU AUTO — CIĄGŁA PĘTLA
     useEffect(() => {
       if (!autoMode || !has) return
 
-      // czyść stare timery
-      if (timerA.current) clearTimeout(timerA.current)
-      if (timerB.current) clearTimeout(timerB.current)
+      stopTimersAndSpeech()
 
       // FAZA A — pierwsza strona
-      const textA = showBack ? card.back : card.front
-      speak(textA)
+      const isBackA = showBack
+      const textA = isBackA ? card.back : card.front
+      speak(textA, isBackA)
 
       timerA.current = setTimeout(() => {
         // FAZA B — flip + druga strona
         const newShowBack = !showBack
         setShowBack(newShowBack)
-        const textB = newShowBack ? card.back : card.front
-        speak(textB)
+        const isBackB = newShowBack
+        const textB = isBackB ? card.back : card.front
+        speak(textB, isBackB)
 
         timerB.current = setTimeout(() => {
-          // przejście do następnej (ciągła pętla)
+          // następna karta — i cykl od nowa
           setReviewIdx(i => (i + 1) % filtered.length)
-          // efekt odpali się ponownie, bo zależy od reviewIdx/autoMode
         }, Math.max(1, phaseB) * 1000)
       }, Math.max(1, phaseA) * 1000)
 
-      return () => {
-        if (timerA.current) clearTimeout(timerA.current)
-        if (timerB.current) clearTimeout(timerB.current)
-      }
+      return () => stopTimersAndSpeech()
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [autoMode, reviewIdx, filtered, showBack, phaseA, phaseB, ttsLang])
+    }, [autoMode, reviewIdx, filtered, showBack, phaseA, phaseB, ttsFrontLang, ttsBackLang])
 
     if (!has) return <p className="text-sm text-gray-500">Brak fiszek do przeglądu.</p>
 
@@ -474,8 +482,9 @@ export default function App() {
        ${showBack ? 'bg-sky-100 border-sky-200 text-sky-800' : 'bg-emerald-100 border-emerald-200 text-emerald-800'}`
 
     const speakVisible = () => {
-      const text = showBack ? card.back : card.front
-      speak(text)
+      const isBackSide = showBack
+      const text = isBackSide ? card.back : card.front
+      speak(text, isBackSide)
     }
 
     return (
@@ -494,7 +503,8 @@ export default function App() {
         <div className="flex flex-wrap gap-2 mt-4 items-center">
           <button
             className="px-3 py-2 rounded-xl bg-gray-100 hover:bg-gray-200"
-            onClick={() => setReviewIdx(i => (i + 1) % filtered.length)}
+            onClick={gotoNextNow}
+            title="Przerwij i przejdź do następnej"
           >
             Następna
           </button>
@@ -512,14 +522,34 @@ export default function App() {
             Czytaj
           </button>
 
-          {/* Język czytania */}
+          {/* Języki TTS dla przodu/tyłu */}
           <div className="flex items-center gap-2 bg-white rounded-xl border px-3 py-2">
-            <span className="text-sm">Język:</span>
+            <span className="text-sm">Język (Przód):</span>
             <select
               className="border rounded-lg px-2 py-1 h-9"
-              value={ttsLang}
-              onChange={(e)=>setTtsLang(e.target.value)}
-              title="Wymuś język syntezatora mowy"
+              value={ttsFrontLang}
+              onChange={(e)=>setTtsFrontLang(e.target.value)}
+              title="Wymuś język czytania dla przodu"
+            >
+              <option value="auto">Auto</option>
+              <option value="pl-PL">Polski (pl-PL)</option>
+              <option value="en-US">English (en-US)</option>
+              <option value="de-DE">Deutsch (de-DE)</option>
+              <option value="es-ES">Español (es-ES)</option>
+              <option value="fr-FR">Français (fr-FR)</option>
+              <option value="it-IT">Italiano (it-IT)</option>
+              <option value="pt-PT">Português (pt-PT)</option>
+              <option value="tr-TR">Türkçe (tr-TR)</option>
+            </select>
+          </div>
+
+          <div className="flex items-center gap-2 bg-white rounded-xl border px-3 py-2">
+            <span className="text-sm">Język (Tył):</span>
+            <select
+              className="border rounded-lg px-2 py-1 h-9"
+              value={ttsBackLang}
+              onChange={(e)=>setTtsBackLang(e.target.value)}
+              title="Wymuś język czytania dla tyłu"
             >
               <option value="auto">Auto</option>
               <option value="pl-PL">Polski (pl-PL)</option>
@@ -776,6 +806,8 @@ export default function App() {
               onStopAuto={() => setAutoMode(false)}
               phaseA={phaseA}
               phaseB={phaseB}
+              ttsFrontLang={ttsFrontLang}
+              ttsBackLang={ttsBackLang}
             />
           </div>
         </section>
