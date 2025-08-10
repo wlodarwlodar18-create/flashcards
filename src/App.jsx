@@ -14,6 +14,20 @@ export default function App() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
+  const [ownerPassword, setOwnerPassword] = useState('')
+
+async function signInWithPassword(e) {
+  e.preventDefault()
+  setLoading(true)
+  setError('')
+  const { error } = await supabase.auth.signInWithPassword({
+    email,
+    password: ownerPassword
+  })
+  setLoading(false)
+  if (error) setError(error.message)
+}
+
   const [cards, setCards] = useState([])
   const [q, setQ] = useState('')
   const [newFront, setNewFront] = useState('')
@@ -186,6 +200,32 @@ export default function App() {
               {loading ? 'Wysyłanie…' : 'Wyślij link'}
             </button>
           </form>
+          <hr className="my-4" />
+<p className="text-sm font-semibold">Logowanie właściciela (e-mail + hasło)</p>
+<form onSubmit={signInWithPassword} className="mt-2 space-y-2">
+  <input
+    type="email"
+    required
+    placeholder="twoj@email.pl"
+    value={email}
+    onChange={(e) => setEmail(e.target.value)}
+    className="w-full border rounded-xl px-3 py-2"
+  />
+  <input
+    type="password"
+    required
+    placeholder="Hasło"
+    value={ownerPassword}
+    onChange={(e) => setOwnerPassword(e.target.value)}
+    className="w-full border rounded-xl px-3 py-2"
+  />
+  <button
+    disabled={loading}
+    className="w-full rounded-xl px-4 py-2 bg-blue-600 text-white disabled:opacity-50"
+  >
+    {loading ? 'Logowanie…' : 'Zaloguj się hasłem'}
+  </button>
+</form>
           {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
           <p className="text-xs text-gray-500 mt-4">Link zaloguje Cię z powrotem na tę stronę.</p>
         </div>
