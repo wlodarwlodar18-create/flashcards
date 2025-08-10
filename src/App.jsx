@@ -67,30 +67,6 @@ function pickVoice(voices, lang) {
   return voices[0]
 }
 
-/* Prosta kontrola współbieżności (mapLimit) */
-async function mapLimit(items, limit, worker) {
-  const ret = []
-  let i = 0
-  const running = new Set()
-  async function runOne() {
-    if (i >= items.length) return
-    const idx = i++
-    const p = (async () => worker(items[idx], idx))()
-    running.add(p)
-    try {
-      const val = await p
-      ret[idx] = val
-    } finally {
-      running.delete(p)
-      await runOne()
-    }
-  }
-  const starters = Math.min(limit, items.length)
-  await Promise.all(Array.from({ length: starters }, runOne))
-  await Promise.all([...running])
-  return ret
-}
-
 export default function App() {
   const [session, setSession] = useState(null)
 
@@ -340,6 +316,7 @@ export default function App() {
 
   // ===== CSV utils (mapowanie wiersza)
   function rowToRecord(r, userId, folderId) {
+    // Wspieramy nagłówki: "Przód" / "Przod" / "front" oraz "Tył" / "Tyl" / "back"
     const front = (r['Przód'] ?? r['Przod'] ?? r.front ?? '').toString().trim()
     const back  = (r['Tył']   ?? r['Tyl']   ?? r.back  ?? '').toString().trim()
     if (!front || !back) return null
@@ -369,8 +346,9 @@ export default function App() {
     setError('')
     setImportProgress({ running: true, done: 0 })
 
-    const CHUNK = 200         // rozmiar paczki do Supabase
-    const DELAY_MS = 120      // krótka pauza między paczkami (rate limit safe)
+    // Bezpieczne ustawienia dla dużych plików/limitów:
+    const CHUNK = 100        // mniejsze paczki => mniejsze ryzyko 413 i 429
+    const DELAY_MS = 300     // pauza między paczkami => mniej błędów rate-limit
 
     let batch = []
     let processed = 0
@@ -398,8 +376,9 @@ export default function App() {
           header: true,
           skipEmptyLines: true,
           worker: true, // web worker zmniejsza lagi UI
+          // Możesz wymusić kodowanie: encoding: 'UTF-8',
+          // delimiter: ',' // w razie problemów ze średnikami odkomentuj i ustaw na ';'
           step: (results, parser) => {
-            // UWAGA: step nie jest async — robimy pauzę na czas flush
             const data = results.data
             const rec = rowToRecord(data, session.user.id, importFolderId)
             if (rec) batch.push(rec)
@@ -421,7 +400,7 @@ export default function App() {
           complete: async () => {
             if (parserAborted) return
             try {
-              await flush() // resztka < CHUNK
+              await flush() // reszta < CHUNK
               resolve(null)
             } catch (err) {
               reject(err)
@@ -436,82 +415,11 @@ export default function App() {
     } catch (err) {
       console.error(err)
       setError(err.message || 'Nie udało się zaimportować pliku.')
-      alert('Wystąpił błąd podczas importu. Spróbuj ponownie, ewentualnie mniejszymi partiami.')
+      alert('Wystąpił błąd podczas importu. Jeśli to limit żądań, zmniejsz CHUNK do 50 lub zwiększ DELAY_MS do 500–700 ms.')
     } finally {
       setLoading(false)
       setImportProgress({ running: false, done: processed })
       e.target.value = ''
-    }
-  }
-
-  // ===== LISTA 1000 NAJCZĘSTSZYCH – z pliku w /public =====
-  async function loadTopCommonWords() {
-    const res = await fetch('/common-en-1000.txt', { cache: 'no-store' })
-    if (!res.ok) throw new Error('Nie znaleziono pliku common-en-1000.txt w /public')
-    const text = await res.text()
-    const words = text
-      .split(/\r?\n/)
-      .map(w => w.trim().toLowerCase())
-      .filter(Boolean)
-    if (words.length < 30) throw new Error('Lista zawiera zbyt mało słów (min. 30).')
-    return words
-  }
-
-  function sampleUnique(arr, n) {
-    if (n >= arr.length) return shuffle(arr)
-    const a = [...arr]
-    for (let i = a.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1))
-      ;[a[i], a[j]] = [a[j], a[i]]
-    }
-    return a.slice(0, n)
-  }
-
-  async function translateEnToPl(text) {
-    const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=en|pl`
-    const res = await fetch(url)
-    if (!res.ok) throw new Error('Błąd tłumaczenia')
-    const data = await res.json()
-    const t = data?.responseData?.translatedText
-    return (t && typeof t === 'string') ? t : text
-  }
-
-  // 30 losowych z listy 1000 + tłumaczenie PL
-  async function generate30IntoFolder(folder) {
-    if (!folder?.id) return
-    if (!window.confirm(`Dodać 30 losowych słów z listy 1000 do folderu „${folder.name}”?`)) return
-    setLoading(true); setError('')
-    try {
-      const topWords = await loadTopCommonWords()
-      const chosen = sampleUnique(topWords, 30)
-      const translated = await mapLimit(chosen, 4, async (w) => {
-        try {
-          const pl = await translateEnToPl(w)
-          return { front: w, back: pl }
-        } catch {
-          return { front: w, back: w }
-        }
-      })
-      const payload = translated
-        .filter(x => x.front && x.back)
-        .map(x => ({
-          id: uuidv4(),
-          user_id: session.user.id,
-          front: x.front,
-          back: x.back,
-          known: false,
-          folder_id: folder.id
-        }))
-      const { error } = await supabase.from('flashcards').insert(payload)
-      if (error) throw error
-      await fetchCards()
-      alert(`Dodano ${payload.length} fiszek do folderu „${folder.name}”.`)
-    } catch (err) {
-      console.error(err)
-      setError(err.message || 'Nie udało się dodać 30 słów.')
-      alert('Wystąpił błąd podczas dodawania. Upewnij się, że dodałeś plik /public/common-en-1000.txt.')
-    } finally {
-      setLoading(false)
     }
   }
 
@@ -532,7 +440,7 @@ export default function App() {
   function Review({ autoMode, phaseA, phaseB, ttsFrontLang, ttsBackLang, suppressAutoTick }) {
     const has = filtered.length > 0
     const safeLen = Math.max(1, filtered.length)
-       const card = filtered[reviewIdx % safeLen]
+    const card = filtered[reviewIdx % safeLen]
     const [showBack, setShowBack] = useState(false)
 
     const timerA = useRef(null)
@@ -844,15 +752,6 @@ export default function App() {
                   {f.name}
                 </button>
                 <div className="flex items-center gap-2">
-                  {/* 30+ z listy 1000 */}
-                  <button
-                    className={`px-2 py-1 h-9 rounded-lg border ${activeFolderId===f.id ? 'bg-white/10' : 'hover:bg-white'}`}
-                    onClick={() => generate30IntoFolder(f)}
-                    title="Dodaj 30 losowych słów (z listy 1000) EN→PL do tego folderu"
-                    disabled={loading}
-                  >
-                    30+
-                  </button>
                   <button
                     className={`px-2 py-1 h-9 rounded-lg border ${activeFolderId===f.id ? 'bg-white/10' : 'hover:bg-white'}`}
                     onClick={() => deleteFolder(f.id, f.name)}
@@ -932,7 +831,7 @@ export default function App() {
                 Oczekiwane nagłówki: <code>Przód</code>, <code>Tył</code>. (Kolumny <code>front</code>/<code>back</code> też zadziałają)
               </p>
 
-              {/* Pasek postępu importu (bez procentów) */}
+              {/* Pasek postępu importu */}
               {importProgress.running && (
                 <div className="mt-3">
                   <div className="text-xs text-gray-700 mb-1">
