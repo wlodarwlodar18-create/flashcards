@@ -8,7 +8,7 @@ const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || ''
 const supabaseAnon = import.meta.env.VITE_SUPABASE_ANON_KEY || ''
 const supabase = createClient(supabaseUrl, supabaseAnon)
 
-/* Fisher–Yates shuffle */
+/* ===== Utils ===== */
 function shuffle(arr) {
   const a = [...arr]
   for (let i = a.length - 1; i > 0; i--) {
@@ -18,14 +18,10 @@ function shuffle(arr) {
   return a
 }
 
-/* Usuwanie diakrytyków */
 function stripDiacritics(s) {
-  return (s || '')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
+  return (s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
 }
 
-/* Heurystyczne wykrywanie języka + PL bez ogonków */
 function detectLang(text) {
   const raw = (text || '').trim()
   if (!raw) return 'en-US'
@@ -41,7 +37,6 @@ function detectLang(text) {
   if (/[àèéìòù]/i.test(raw)) return 'it-IT'
   if (/[ãõçáéíóú]/i.test(raw)) return 'pt-PT'
   if (/[ğüşıçöİ]/i.test(raw)) return 'tr-TR'
-
   const s = stripDiacritics(raw).toLowerCase()
   const plStop = new Set([
     'i','w','na','do','nie','tak','jest','sa','byc','mam','masz','moze','mozna','ktory','ktora','ktore',
@@ -57,7 +52,6 @@ function detectLang(text) {
   return 'en-US'
 }
 
-/* Dobór głosu */
 function pickVoice(voices, lang) {
   if (!voices || !voices.length) return null
   const exact = voices.find(v => v.lang?.toLowerCase() === lang.toLowerCase())
@@ -67,6 +61,49 @@ function pickVoice(voices, lang) {
   return voices[0]
 }
 
+const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+
+// Insert do Supabase z retry + backoff i auto-splitem przy 413
+async function insertWithRetry(rows, { maxRetries = 6, baseDelay = 400 } = {}) {
+  let attempt = 0
+  // pusta paczka = nic nie rób
+  if (!rows || !rows.length) return
+  while (true) {
+    try {
+      const { error } = await supabase.from('flashcards').insert(rows)
+      if (error) {
+        // 413 = payload too large → dzielimy paczkę na pół i wstawiamy osobno
+        if ((error.status === 413 || /payload too large/i.test(error.message || '')) && rows.length > 1) {
+          const mid = Math.floor(rows.length / 2)
+          await insertWithRetry(rows.slice(0, mid), { maxRetries, baseDelay })
+          await insertWithRetry(rows.slice(mid), { maxRetries, baseDelay })
+          return
+        }
+        // 429/5xx = retry z backoffem
+        if (error.status === 429 || (error.status >= 500 && error.status <= 599)) {
+          if (attempt < maxRetries) {
+            const delay = baseDelay * Math.pow(2, attempt) + Math.floor(Math.random() * 200)
+            attempt++
+            await sleep(delay)
+            continue
+          }
+        }
+        throw error
+      }
+      return
+    } catch (err) {
+      if (attempt < maxRetries) {
+        const delay = baseDelay * Math.pow(2, attempt) + Math.floor(Math.random() * 200)
+        attempt++
+        await sleep(delay)
+        continue
+      }
+      throw err
+    }
+  }
+}
+
+/* ===== App ===== */
 export default function App() {
   const [session, setSession] = useState(null)
 
@@ -102,7 +139,7 @@ export default function App() {
   // dodawanie folderu
   const [newFolderName, setNewFolderName] = useState('')
 
-  // import CSV (wymagany folder)
+  // import CSV
   const [importFolderId, setImportFolderId] = useState('')
   const [importProgress, setImportProgress] = useState({ running: false, done: 0 })
 
@@ -168,7 +205,7 @@ export default function App() {
     } catch {}
   }, [sidePref, showFilter, shuffleOnLoad, phaseA, phaseB, ttsFrontLang, ttsBackLang])
 
-  // ===== API
+  /* ===== API ===== */
   async function fetchFolders() {
     setError('')
     const { data, error } = await supabase
@@ -252,7 +289,6 @@ export default function App() {
     else setCards(prev => prev.filter(c => c.id !== id))
   }
 
-  // Toggle „Zapamiętana”
   async function toggleKnown(card) {
     const next = !card.known
     setCards(prev => prev.map(c => c.id === card.id ? { ...c, known: next } : c))
@@ -269,23 +305,7 @@ export default function App() {
     }
   }
 
-  async function markKnown(card) {
-    if (card.known) return
-    setCards(prev => prev.map(c => c.id === card.id ? { ...c, known: true } : c))
-    setSuppressAutoTick(t => t + 1)
-    const { error } = await supabase
-      .from('flashcards')
-      .update({ known: true })
-      .eq('id', card.id)
-      .eq('user_id', session.user.id)
-    if (error) {
-      setError(error.message)
-      setCards(prev => prev.map(c => c.id === card.id ? { ...c, known: false } : c))
-      setSuppressAutoTick(t => t + 1)
-    }
-  }
-
-  // ===== Logowanie
+  /* ===== Logowanie ===== */
   async function signInWithEmail(e) {
     e.preventDefault()
     setLoading(true); setError('')
@@ -314,9 +334,8 @@ export default function App() {
     setCards([]); setFolders([])
   }
 
-  // ===== CSV utils (mapowanie wiersza)
+  /* ===== CSV mapping ===== */
   function rowToRecord(r, userId, folderId) {
-    // Wspieramy nagłówki: "Przód" / "Przod" / "front" oraz "Tył" / "Tyl" / "back"
     const front = (r['Przód'] ?? r['Przod'] ?? r.front ?? '').toString().trim()
     const back  = (r['Tył']   ?? r['Tyl']   ?? r.back  ?? '').toString().trim()
     if (!front || !back) return null
@@ -331,7 +350,7 @@ export default function App() {
     }
   }
 
-  // ===== Import CSV — STRUMIENIOWO (duże pliki) =====
+  /* ===== Import CSV — strumieniowo, retry, backoff ===== */
   async function handleCSVUpload(e) {
     const file = e.target.files?.[0]
     if (!file) return
@@ -346,25 +365,19 @@ export default function App() {
     setError('')
     setImportProgress({ running: true, done: 0 })
 
-    // Bezpieczne ustawienia dla dużych plików/limitów:
-    const CHUNK = 100        // mniejsze paczki => mniejsze ryzyko 413 i 429
-    const DELAY_MS = 300     // pauza między paczkami => mniej błędów rate-limit
+    // Bezpieczne ustawienia dla środowisk z limitami:
+    let CHUNK = 50        // mniejsze paczki → stabilniej
+    let DELAY_MS = 500    // pauza między paczkami
 
     let batch = []
     let processed = 0
     let parserAborted = false
 
-    const sleep = (ms) => new Promise(r => setTimeout(r, ms))
-
     const flush = async () => {
       if (!batch.length) return
       const toSend = batch
       batch = []
-      const { error } = await supabase.from('flashcards').insert(toSend)
-      if (error) {
-        console.error('Insert error:', error)
-        throw new Error(error.message || 'Błąd podczas zapisu do bazy.')
-      }
+      await insertWithRetry(toSend, { maxRetries: 6, baseDelay: 400 })
       processed += toSend.length
       setImportProgress({ running: true, done: processed })
       await sleep(DELAY_MS)
@@ -374,13 +387,15 @@ export default function App() {
       await new Promise((resolve, reject) => {
         Papa.parse(file, {
           header: true,
-          skipEmptyLines: true,
-          worker: true, // web worker zmniejsza lagi UI
-          // Możesz wymusić kodowanie: encoding: 'UTF-8',
-          // delimiter: ',' // w razie problemów ze średnikami odkomentuj i ustaw na ';'
+          skipEmptyLines: 'greedy',
+          worker: true,
+          // Jeśli masz CSV ze średnikiem, odkomentuj:
+          // delimiter: ';',
+          // Jeśli problem z PL znakami, odkomentuj:
+          // encoding: 'UTF-8',
+          transformHeader: h => (h || '').trim(),
           step: (results, parser) => {
-            const data = results.data
-            const rec = rowToRecord(data, session.user.id, importFolderId)
+            const rec = rowToRecord(results.data, session.user.id, importFolderId)
             if (rec) batch.push(rec)
 
             if (batch.length >= CHUNK) {
@@ -413,9 +428,9 @@ export default function App() {
       await fetchCards()
       alert(`Zaimportowano ${processed} fiszek do wybranego folderu.`)
     } catch (err) {
-      console.error(err)
+      console.error('CSV import error:', err)
       setError(err.message || 'Nie udało się zaimportować pliku.')
-      alert('Wystąpił błąd podczas importu. Jeśli to limit żądań, zmniejsz CHUNK do 50 lub zwiększ DELAY_MS do 500–700 ms.')
+      alert('Import przerwany: ' + (err.message || 'nieznany błąd') + '\n\nSpróbuj ponownie: CHUNK=25 i DELAY_MS=700. Upewnij się też, że nagłówki to „Przód” i „Tył”.')
     } finally {
       setLoading(false)
       setImportProgress({ running: false, done: processed })
@@ -423,7 +438,7 @@ export default function App() {
     }
   }
 
-  // ===== Filtrowanie
+  /* ===== Filtrowanie ===== */
   const foldersForSelect = useMemo(() => [{ id: 'ALL', name: 'Wszystkie' }, ...folders], [folders])
 
   const filtered = useMemo(() => {
@@ -436,7 +451,7 @@ export default function App() {
     return arr
   }, [cards, activeFolderId, showFilter, q])
 
-  // ===== Tryb nauki — karta + Tryb auto
+  /* ===== Tryb nauki (karta + auto) ===== */
   function Review({ autoMode, phaseA, phaseB, ttsFrontLang, ttsBackLang, suppressAutoTick }) {
     const has = filtered.length > 0
     const safeLen = Math.max(1, filtered.length)
@@ -755,7 +770,7 @@ export default function App() {
                   <button
                     className={`px-2 py-1 h-9 rounded-lg border ${activeFolderId===f.id ? 'bg-white/10' : 'hover:bg-white'}`}
                     onClick={() => deleteFolder(f.id, f.name)}
-                    title="Usuń folder"
+                    title="Usuń folder (fiszki w środku też zostaną usunięte)"
                   >
                     Usuń
                   </button>
@@ -813,7 +828,7 @@ export default function App() {
                 </select>
 
                 <label
-                  className={`inline-flex items-center justify-center gap-2 px-4 h-10 rounded-xl border bg-white cursor-pointer hover:bg-gray-50 whitespace-nowrap shrink-0 w-full lg:w-auto ${!importFolderId ? 'opacity-60 cursor-not-allowed' : ''}`}
+                  className={`inline-flex items-center justify-center gap-2 px-4 h-10 rounded-xl border bg-white cursor-pointer hover:bg-gray-50 whitespace-nowrap shrink-0 w/full lg:w-auto ${!importFolderId ? 'opacity-60 cursor-not-allowed' : ''}`}
                   title={!importFolderId ? 'Najpierw wybierz folder' : 'Wybierz plik CSV'}
                 >
                   <span className="text-sm text-gray-700">Wybierz plik</span>
