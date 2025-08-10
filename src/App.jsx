@@ -181,6 +181,20 @@ export default function App() {
     }
   }
 
+  async function markKnown(card) {
+    if (card.known) return
+    setCards(prev => prev.map(c => c.id === card.id ? { ...c, known: true } : c))
+    const { error } = await supabase
+      .from('flashcards')
+      .update({ known: true })
+      .eq('id', card.id)
+      .eq('user_id', session.user.id)
+    if (error) {
+      setError(error.message)
+      setCards(prev => prev.map(c => c.id === card.id ? { ...c, known: false } : c))
+    }
+  }
+
   async function signInWithEmail(e) {
     e.preventDefault()
     setLoading(true); setError('')
@@ -319,18 +333,7 @@ export default function App() {
 
     return (
       <div className="mt-6">
-        <div className="flex items-center justify-between mb-2">
-          <span className="text-xs text-gray-500">
-            {(reviewIdx % filtered.length) + 1} / {filtered.length}
-          </span>
-          <div className="flex items-center gap-2">
-            <button className="text-xs underline" onClick={() => setReviewIdx(i => (i + 1) % filtered.length)}>Następna →</button>
-            <button className="text-xs underline" onClick={() => toggleKnown(card)}>
-              {card.known ? 'Oznacz jako NIEznaną' : 'Oznacz jako zapamiętaną'}
-            </button>
-          </div>
-        </div>
-
+        {/* Karta — bez górnego paska z „Następna →” i bez przycisku oznaczania */}
         <div
           className={`${containerClasses} relative cursor-pointer`}
           onClick={() => setShowBack(s => !s)}
@@ -342,9 +345,27 @@ export default function App() {
           </div>
         </div>
 
-        <div className="flex gap-2 mt-4">
-          <button className="px-3 py-2 rounded-xl bg-gray-100 hover:bg-gray-200" onClick={() => setReviewIdx(i => (i + 1) % filtered.length)}>Następna</button>
-          <button className="px-3 py-2 rounded-xl bg-gray-100 hover:bg-gray-200" onClick={() => setShowBack(s => !s)}>{showBack ? 'Pokaż front' : 'Pokaż back'}</button>
+        <div className="flex flex-wrap gap-2 mt-4">
+          <button
+            className="px-3 py-2 rounded-xl bg-gray-100 hover:bg-gray-200"
+            onClick={() => setReviewIdx(i => (i + 1) % filtered.length)}
+          >
+            Następna
+          </button>
+          <button
+            className="px-3 py-2 rounded-xl bg-gray-100 hover:bg-gray-200"
+            onClick={() => setShowBack(s => !s)}
+          >
+            Pokaż
+          </button>
+          <button
+            className="px-3 py-2 rounded-xl bg-emerald-600 text-white disabled:opacity-50"
+            onClick={() => markKnown(card)}
+            disabled={!!card.known}
+            title={card.known ? 'Już zapamiętana' : 'Oznacz tę fiszkę jako zapamiętaną'}
+          >
+            Zapamiętaj
+          </button>
         </div>
       </div>
     )
