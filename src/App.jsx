@@ -8,6 +8,18 @@ const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || ''
 const supabaseAnon = import.meta.env.VITE_SUPABASE_ANON_KEY || ''
 const supabase = createClient(supabaseUrl, supabaseAnon)
 
+// Tryb auto i suwaki czasu
+const [autoMode, setAutoMode] = useState(false)
+const [phaseA, setPhaseA] = useState(7) // ile sekund pierwsza strona
+const [phaseB, setPhaseB] = useState(3) // ile sekund druga strona
+
+// Języki TTS
+const [ttsFrontLang, setTtsFrontLang] = useState('auto')
+const [ttsBackLang, setTtsBackLang] = useState('auto')
+
+
+
+
 /* Fisher–Yates shuffle */
 function shuffle(arr) {
   const a = [...arr]
@@ -197,7 +209,7 @@ export default function App() {
         setFirstLoad(false)
       }
       setCards(list)
-      setReviewIdx(0)
+      setIdx(0)
     }
     setLoading(false)
   }
@@ -831,6 +843,7 @@ function Review({ autoMode, onStopAuto, phaseA, phaseB, ttsFrontLang, ttsBackLan
               phaseB={phaseB}
               ttsFrontLang={ttsFrontLang}
               ttsBackLang={ttsBackLang}
+ 
             />
           </div>
         </section>
