@@ -117,8 +117,10 @@ export default function App() {
     return () => { window.speechSynthesis.onvoiceschanged = null }
   }, [])
 
-  // Tryb 7s
-  const [sevenSecMode, setSevenSecMode] = useState(false)
+  // Tryb auto (slidery)
+  const [autoMode, setAutoMode] = useState(false)
+  const [phaseA, setPhaseA] = useState(7) // sekundy — pierwsza strona
+  const [phaseB, setPhaseB] = useState(3) // sekundy — druga strona
 
   // init
   useEffect(() => {
@@ -131,9 +133,13 @@ export default function App() {
       const storedSide = localStorage.getItem('sidePref')
       const storedFilter = localStorage.getItem('showFilter')
       const storedShuffle = localStorage.getItem('shuffleOnLoad')
+      const storedA = localStorage.getItem('phaseA')
+      const storedB = localStorage.getItem('phaseB')
       if (storedSide) setSidePref(storedSide)
       if (storedFilter) setShowFilter(storedFilter)
       if (storedShuffle !== null) setShuffleOnLoad(storedShuffle === 'true')
+      if (storedA) setPhaseA(Math.min(15, Math.max(3, Number(storedA) || 7)))
+      if (storedB) setPhaseB(Math.min(10, Math.max(1, Number(storedB) || 3)))
     } catch {}
     init()
   }, [])
@@ -148,8 +154,10 @@ export default function App() {
       localStorage.setItem('sidePref', sidePref)
       localStorage.setItem('showFilter', showFilter)
       localStorage.setItem('shuffleOnLoad', String(shuffleOnLoad))
+      localStorage.setItem('phaseA', String(phaseA))
+      localStorage.setItem('phaseB', String(phaseB))
     } catch {}
-  }, [sidePref, showFilter, shuffleOnLoad])
+  }, [sidePref, showFilter, shuffleOnLoad, phaseA, phaseB])
 
   // ===== API
   async function fetchFolders() {
@@ -363,16 +371,16 @@ export default function App() {
     return arr
   }, [cards, activeFolderId, showFilter, q])
 
-  // ===== Tryb nauki — karta + Tryb 7s
-  function Review({ sevenSecMode, onStopSevenSec }) {
+  // ===== Tryb nauki — karta + Tryb auto (slidery)
+  function Review({ autoMode, onStopAuto, phaseA, phaseB }) {
     const has = filtered.length > 0
     const safeLen = Math.max(1, filtered.length)
     const card = filtered[reviewIdx % safeLen]
     const [showBack, setShowBack] = useState(false)
 
     // timery i mowa
-    const timerA = useRef(null) // 7s
-    const timerB = useRef(null) // 3s
+    const timerA = useRef(null) // faza A
+    const timerB = useRef(null) // faza B
     const startedAtIdxRef = useRef(null)
     const leftRef = useRef(0)
     const utterRef = useRef(null)
@@ -408,12 +416,12 @@ export default function App() {
       return u
     }
 
-    // LOGIKA TRYBU 7s:
-    // - faza A (7 s): pokazuje aktualną stronę i ją czyta
-    // - faza B (3 s): flip, pokazuje drugą stronę i ją czyta
+    // LOGIKA TRYBU AUTO:
+    // - faza A (phaseA s): pokazuje aktualną stronę i ją czyta
+    // - faza B (phaseB s): flip, pokazuje drugą stronę i ją czyta
     // - przejście do następnej; po jednym okrążeniu koniec trybu
     useEffect(() => {
-      if (!sevenSecMode || !has) return
+      if (!autoMode || !has) return
 
       if (startedAtIdxRef.current == null) {
         startedAtIdxRef.current = reviewIdx % filtered.length
@@ -424,12 +432,12 @@ export default function App() {
       if (timerA.current) clearTimeout(timerA.current)
       if (timerB.current) clearTimeout(timerB.current)
 
-      // FAZA A — 7 s: czytaj aktualnie widoczną stronę
+      // FAZA A — phaseA s: czytaj aktualnie widoczną stronę
       const textA = showBack ? card.back : card.front
       speak(textA)
 
       timerA.current = setTimeout(() => {
-        // FAZA B — flip + 3 s: czytaj drugą stronę
+        // FAZA B — flip + phaseB s: czytaj drugą stronę
         const newShowBack = !showBack
         setShowBack(newShowBack)
 
@@ -444,7 +452,7 @@ export default function App() {
 
           // zakończenie po jednym okrążeniu
           if (leftRef.current === 0 || nextIdx === startedAtIdxRef.current) {
-            onStopSevenSec?.()
+            onStopAuto?.()
             if (timerA.current) clearTimeout(timerA.current)
             if (timerB.current) clearTimeout(timerB.current)
             timerA.current = null
@@ -452,15 +460,15 @@ export default function App() {
             startedAtIdxRef.current = null
             leftRef.current = 0
           }
-        }, 3000) // 3 s druga strona
-      }, 7000) // 7 s pierwsza strona
+        }, Math.max(1, phaseB) * 1000) // faza B
+      }, Math.max(1, phaseA) * 1000) // faza A
 
       return () => {
         if (timerA.current) clearTimeout(timerA.current)
         if (timerB.current) clearTimeout(timerB.current)
       }
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [sevenSecMode, reviewIdx, filtered, showBack])
+    }, [autoMode, reviewIdx, filtered, showBack, phaseA, phaseB])
 
     if (!has) return <p className="text-sm text-gray-500">Brak fiszek do przeglądu.</p>
 
@@ -511,13 +519,14 @@ export default function App() {
             Czytaj
           </button>
           <button
-            className="px-3 py-2 rounded-xl bg-amber-600 text-white hover:bg-amber-500"
+            className={`px-3 py-2 rounded-xl ${autoMode ? 'bg-amber-600 text-white hover:bg-amber-500' : 'bg-amber-100 hover:bg-amber-200 text-amber-900'}`}
             onClick={() => {
               window.speechSynthesis?.cancel?.()
-              setSevenSecMode(v => !v)
+              setAutoMode(v => !v)
             }}
+            title="Automatyczne pokazywanie, czytanie i przechodzenie dalej"
           >
-            {sevenSecMode ? 'Stop 7s' : 'Tryb 7s'}
+            {autoMode ? 'Stop (Tryb auto)' : 'Tryb auto'}
           </button>
           <button
             className="px-3 py-2 rounded-xl bg-emerald-600 text-white disabled:opacity-50"
@@ -527,6 +536,36 @@ export default function App() {
           >
             Zapamiętana
           </button>
+        </div>
+
+        {/* Suwaki czasu */}
+        <div className="mt-4 grid sm:grid-cols-2 gap-4 bg-white/60 rounded-xl p-3 border">
+          <div>
+            <label className="text-sm font-medium">Faza 1 — pierwsza strona (sekundy)</label>
+            <input
+              type="range"
+              min={3}
+              max={15}
+              step={1}
+              value={phaseA}
+              onChange={(e)=>{ onStopAuto?.(); setPhaseA(Number(e.target.value)) }}
+              className="w-full"
+            />
+            <div className="text-xs text-gray-600 mt-1">Aktualnie: {phaseA}s</div>
+          </div>
+          <div>
+            <label className="text-sm font-medium">Faza 2 — druga strona (sekundy)</label>
+            <input
+              type="range"
+              min={1}
+              max={10}
+              step={1}
+              value={phaseB}
+              onChange={(e)=>{ onStopAuto?.(); setPhaseB(Number(e.target.value)) }}
+              className="w-full"
+            />
+            <div className="text-xs text-gray-600 mt-1">Aktualnie: {phaseB}s</div>
+          </div>
         </div>
       </div>
     )
@@ -539,7 +578,7 @@ export default function App() {
           <h1 className="text-2xl font-bold">Fiszki – logowanie</h1>
           <p className="text-sm text-gray-600 mt-2">Podaj e-mail (magic link) albo zaloguj hasłem właściciela.</p>
 
-          {/* Magic link */}
+        {/* Magic link */}
           <form onSubmit={signInWithEmail} className="mt-4 space-y-3">
             <input type="email" required placeholder="twoj@email.pl" value={email} onChange={(e) => setEmail(e.target.value)} className="w-full border rounded-xl px-3 py-2 h-10" />
             <button disabled={loading} className="w-full rounded-xl px-4 h-10 bg-black text-white disabled:opacity-50">
@@ -717,8 +756,10 @@ export default function App() {
             <h2 className="font-semibold mb-3">Tryb nauki</h2>
             <input className="w-full border rounded-xl px-3 h-10 mb-3" placeholder="Szukaj w fiszkach…" value={q} onChange={e => setQ(e.target.value)} />
             <Review
-              sevenSecMode={sevenSecMode}
-              onStopSevenSec={() => setSevenSecMode(false)}
+              autoMode={autoMode}
+              onStopAuto={() => setAutoMode(false)}
+              phaseA={phaseA}
+              phaseB={phaseB}
             />
           </div>
         </section>
