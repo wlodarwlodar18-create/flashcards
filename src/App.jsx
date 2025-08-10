@@ -398,7 +398,6 @@ export default function App() {
     const utterRef = useRef(null)
     const nextBtnRef = useRef(null)
     const runIdRef = useRef(0)
-    const startSideRef = useRef(null)
     const lastSuppressRef = useRef(suppressAutoTick)
 
     // startowa strona wg preferencji przy każdej nowej karcie
@@ -461,13 +460,11 @@ export default function App() {
       stopAll()
       const myRunId = ++runIdRef.current
 
-      // front -> false (Przód), back -> true (Tył), random -> LOSUJ co sekwencję
       const startBack =
         sidePref === 'front' ? false :
         sidePref === 'back'  ? true  :
         Math.random() < 0.5
 
-      startSideRef.current = startBack
       setShowBack(startBack)
 
       const textA = startBack ? card.back : card.front
@@ -553,12 +550,13 @@ export default function App() {
           >
             {autoMode ? 'Stop (Tryb auto)' : 'Tryb auto'}
           </button>
+          {/* ZAWSZE „Zapamiętane” — tylko kolor się zmienia */}
           <button
             className={`px-3 py-2 h-10 rounded-xl ${card.known ? 'bg-emerald-600 text-white' : 'bg-gray-200 text-black hover:bg-gray-300'}`}
             onClick={() => toggleKnown(card)}
             title="Przełącz status zapamiętania tej fiszki"
           >
-            {card.known ? 'Zapamiętana' : 'Zapamiętaj'}
+            Zapamiętane
           </button>
         </div>
 
@@ -729,9 +727,20 @@ export default function App() {
           <div className="bg-white rounded-2xl shadow p-4">
             <h2 className="font-semibold mb-3">Dodaj fiszkę</h2>
             <form onSubmit={handleAddCard} className="space-y-2">
-              <input className="w-full border rounded-xl px-3 h-10" placeholder="Przód (pytanie)" value={newFront} onChange={e => setNewFront(e.target.value)} />
-              {/* ZMNIEJSZONE pole Tył do h-10, bez rozciągania */}
-              <textarea className="w-full border rounded-xl px-3 py-2 h-10 resize-none" placeholder="Tył (odpowiedź)" value={newBack} onChange={e => setNewBack(e.target.value)} />
+              <input
+                className="w-full border rounded-xl px-3 h-10"
+                placeholder="Przód (pytanie)"
+                value={newFront}
+                onChange={e => setNewFront(e.target.value)}
+              />
+              {/* Tył jako input text (bez strzałek / bez zmiany rozmiaru) */}
+              <input
+                type="text"
+                className="w-full border rounded-xl px-3 h-10"
+                placeholder="Tył (odpowiedź)"
+                value={newBack}
+                onChange={e => setNewBack(e.target.value)}
+              />
               <select
                 className="w-full border rounded-xl px-3 h-10"
                 value={newCardFolderId}
@@ -778,7 +787,7 @@ export default function App() {
                 </label>
               </div>
 
-              {/* INFO — TERAZ POD paskiem wyboru */}
+              {/* INFO pod paskiem wyboru */}
               <p className="text-xs text-gray-500 mt-2">
                 Oczekiwane nagłówki: <code>Przód</code>, <code>Tył</code>.
               </p>
