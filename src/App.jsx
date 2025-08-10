@@ -128,6 +128,7 @@ export default function App() {
 
   // import CSV (wymagany folder)
   const [importFolderId, setImportFolderId] = useState('')
+  const [importProgress, setImportProgress] = useState({ running: false, done: 0 })
 
   // nauka
   const [reviewIdx, setReviewIdx] = useState(0)
@@ -337,19 +338,23 @@ export default function App() {
     setCards([]); setFolders([])
   }
 
-  // ===== CSV
-  function parseCSV(file) {
-    return new Promise((resolve, reject) => {
-      Papa.parse(file, {
-        header: true,
-        skipEmptyLines: true,
-        complete: (results) => resolve(results.data),
-        error: (err) => reject(err)
-      })
-    })
+  // ===== CSV utils (mapowanie wiersza)
+  function rowToRecord(r, userId, folderId) {
+    const front = (r['Przód'] ?? r['Przod'] ?? r.front ?? '').toString().trim()
+    const back  = (r['Tył']   ?? r['Tyl']   ?? r.back  ?? '').toString().trim()
+    if (!front || !back) return null
+    const known = String(r.known || '').toLowerCase() === 'true'
+    return {
+      id: uuidv4(),
+      user_id: userId,
+      front,
+      back,
+      known,
+      folder_id: folderId
+    }
   }
 
-  // Import CSV — wymagany folder
+  // ===== Import CSV — STRUMIENIOWO (duże pliki) =====
   async function handleCSVUpload(e) {
     const file = e.target.files?.[0]
     if (!file) return
@@ -359,47 +364,88 @@ export default function App() {
       e.target.value = ''
       return
     }
-    setLoading(true); setError('')
-    try {
-      const rows = await parseCSV(file) // oczekuje: Przód, Tył (lub front, back)
-      const cleaned = rows
-        .map(r => {
-          const front = (r['Przód'] ?? r['Przod'] ?? r.front ?? '').toString().trim()
-          const back  = (r['Tył']   ?? r['Tyl']   ?? r.back  ?? '').toString().trim()
-          const known = String(r.known || '').toLowerCase() === 'true'
-          return { front, back, known }
-        })
-        .filter(r => r.front && r.back)
-      if (!cleaned.length) throw new Error('Plik nie zawiera poprawnych wierszy (kolumny „Przód/Tył”).')
 
-      const payload = cleaned.map(r => ({
-        id: uuidv4(),
-        user_id: session.user.id,
-        front: r.front,
-        back: r.back,
-        known: r.known,
-        folder_id: importFolderId
-      }))
+    setLoading(true)
+    setError('')
+    setImportProgress({ running: true, done: 0 })
 
-      const chunkSize = 500
-      for (let i = 0; i < payload.length; i += chunkSize) {
-        const chunk = payload.slice(i, i + chunkSize)
-        const { error } = await supabase.from('flashcards').insert(chunk)
-        if (error) throw error
+    const CHUNK = 200         // rozmiar paczki do Supabase
+    const DELAY_MS = 120      // krótka pauza między paczkami (rate limit safe)
+
+    let batch = []
+    let processed = 0
+    let parserAborted = false
+
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+
+    const flush = async () => {
+      if (!batch.length) return
+      const toSend = batch
+      batch = []
+      const { error } = await supabase.from('flashcards').insert(toSend)
+      if (error) {
+        console.error('Insert error:', error)
+        throw new Error(error.message || 'Błąd podczas zapisu do bazy.')
       }
+      processed += toSend.length
+      setImportProgress({ running: true, done: processed })
+      await sleep(DELAY_MS)
+    }
+
+    try {
+      await new Promise((resolve, reject) => {
+        Papa.parse(file, {
+          header: true,
+          skipEmptyLines: true,
+          worker: true, // web worker zmniejsza lagi UI
+          step: (results, parser) => {
+            // UWAGA: step nie jest async — robimy pauzę na czas flush
+            const data = results.data
+            const rec = rowToRecord(data, session.user.id, importFolderId)
+            if (rec) batch.push(rec)
+
+            if (batch.length >= CHUNK) {
+              parser.pause()
+              ;(async () => {
+                try {
+                  await flush()
+                  parser.resume()
+                } catch (err) {
+                  parserAborted = true
+                  parser.abort()
+                  reject(err)
+                }
+              })()
+            }
+          },
+          complete: async () => {
+            if (parserAborted) return
+            try {
+              await flush() // resztka < CHUNK
+              resolve(null)
+            } catch (err) {
+              reject(err)
+            }
+          },
+          error: (err) => reject(err)
+        })
+      })
+
       await fetchCards()
-      alert(`Zaimportowano ${payload.length} fiszek do wybranego folderu.`)
+      alert(`Zaimportowano ${processed} fiszek do wybranego folderu.`)
     } catch (err) {
-      setError(err.message)
+      console.error(err)
+      setError(err.message || 'Nie udało się zaimportować pliku.')
+      alert('Wystąpił błąd podczas importu. Spróbuj ponownie, ewentualnie mniejszymi partiami.')
     } finally {
       setLoading(false)
+      setImportProgress({ running: false, done: processed })
       e.target.value = ''
     }
   }
 
   // ===== LISTA 1000 NAJCZĘSTSZYCH – z pliku w /public =====
   async function loadTopCommonWords() {
-    // Umieść plik w public/common-en-1000.txt (jedno słowo na linię)
     const res = await fetch('/common-en-1000.txt', { cache: 'no-store' })
     if (!res.ok) throw new Error('Nie znaleziono pliku common-en-1000.txt w /public')
     const text = await res.text()
@@ -421,7 +467,6 @@ export default function App() {
     return a.slice(0, n)
   }
 
-  // ===== GENEROWANIE 30+ z listy 1000 EN (tłumaczenie na PL) =====
   async function translateEnToPl(text) {
     const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=en|pl`
     const res = await fetch(url)
@@ -431,19 +476,20 @@ export default function App() {
     return (t && typeof t === 'string') ? t : text
   }
 
+  // 30 losowych z listy 1000 + tłumaczenie PL
   async function generate30IntoFolder(folder) {
     if (!folder?.id) return
     if (!window.confirm(`Dodać 30 losowych słów z listy 1000 do folderu „${folder.name}”?`)) return
     setLoading(true); setError('')
     try {
-      const topWords = await loadTopCommonWords()     // <= wczytaj z /public
-      const chosen = sampleUnique(topWords, 30)       // <= wylosuj 30
+      const topWords = await loadTopCommonWords()
+      const chosen = sampleUnique(topWords, 30)
       const translated = await mapLimit(chosen, 4, async (w) => {
         try {
           const pl = await translateEnToPl(w)
           return { front: w, back: pl }
         } catch {
-          return { front: w, back: w } // fallback
+          return { front: w, back: w }
         }
       })
       const payload = translated
@@ -456,13 +502,8 @@ export default function App() {
           known: false,
           folder_id: folder.id
         }))
-      if (!payload.length) throw new Error('Nie udało się przygotować danych do wstawienia.')
-      const chunkSize = 500
-      for (let i = 0; i < payload.length; i += chunkSize) {
-        const chunk = payload.slice(i, i + chunkSize)
-        const { error } = await supabase.from('flashcards').insert(chunk)
-        if (error) throw error
-      }
+      const { error } = await supabase.from('flashcards').insert(payload)
+      if (error) throw error
       await fetchCards()
       alert(`Dodano ${payload.length} fiszek do folderu „${folder.name}”.`)
     } catch (err) {
@@ -491,7 +532,7 @@ export default function App() {
   function Review({ autoMode, phaseA, phaseB, ttsFrontLang, ttsBackLang, suppressAutoTick }) {
     const has = filtered.length > 0
     const safeLen = Math.max(1, filtered.length)
-    const card = filtered[reviewIdx % safeLen]
+       const card = filtered[reviewIdx % safeLen]
     const [showBack, setShowBack] = useState(false)
 
     const timerA = useRef(null)
@@ -692,6 +733,7 @@ export default function App() {
           <h1 className="text-2xl font-bold">Fiszki – logowanie</h1>
           <p className="text-sm text-gray-600 mt-2">Podaj e-mail (magic link) albo zaloguj hasłem właściciela.</p>
 
+          {/* Magic link */}
           <form onSubmit={signInWithEmail} className="mt-4 space-y-3">
             <input type="email" required placeholder="twoj@email.pl" value={email} onChange={(e) => setEmail(e.target.value)} className="w-full border rounded-xl px-3 py-2 h-10" />
             <button disabled={loading} className="w-full rounded-xl px-4 h-10 bg-black text-white disabled:opacity-50">
@@ -699,6 +741,7 @@ export default function App() {
             </button>
           </form>
 
+          {/* Owner password */}
           <hr className="my-4" />
           <p className="text-sm font-semibold">Logowanie właściciela (e-mail + hasło)</p>
           <form onSubmit={signInWithPassword} className="mt-2 space-y-2">
@@ -718,10 +761,12 @@ export default function App() {
   return (
     <main className="min-h-screen bg-gradient-to-b from-slate-50 to-slate-100 p-4">
       <div className="max-w-6xl mx-auto">
+        {/* Header — responsywna siatka kontrolek */}
         <header className="flex flex-col gap-3">
           <h1 className="text-2xl font-bold">Twoje fiszki</h1>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {/* Pokaż */}
             <div className="text-sm bg-white rounded-xl shadow px-3 py-2 flex items-center gap-2">
               <span className="whitespace-nowrap">Pokaż:</span>
               <select className="border rounded-lg px-2 py-1 h-10 w-full" value={showFilter} onChange={(e)=>setShowFilter(e.target.value)}>
@@ -731,6 +776,7 @@ export default function App() {
               </select>
             </div>
 
+            {/* Najpierw */}
             <div className="text-sm bg-white rounded-xl shadow px-3 py-2 flex items-center gap-2">
               <span className="whitespace-nowrap">Najpierw:</span>
               <select className="border rounded-lg px-2 py-1 h-10 w-full" value={sidePref} onChange={(e)=>setSidePref(e.target.value)}>
@@ -740,6 +786,7 @@ export default function App() {
               </select>
             </div>
 
+            {/* Losowanie */}
             <div className="text-sm bg-white rounded-xl shadow px-3 py-2 flex items-center justify-between gap-2">
               <label className="flex items-center gap-2 cursor-pointer">
                 <input type="checkbox" checked={shuffleOnLoad} onChange={(e)=>setShuffleOnLoad(e.target.checked)} />
@@ -755,6 +802,7 @@ export default function App() {
               </button>
             </div>
 
+            {/* Folder */}
             <div className="text-sm bg-white rounded-xl shadow px-3 py-2 flex items-center gap-2 sm:col-span-2 lg:col-span-1">
               <span className="whitespace-nowrap">Folder:</span>
               <select className="border rounded-lg px-2 py-1 h-10 w-full" value={activeFolderId} onChange={(e)=>setActiveFolderId(e.target.value)}>
@@ -762,6 +810,7 @@ export default function App() {
               </select>
             </div>
 
+            {/* User + Wyloguj */}
             <div className="text-sm bg-white rounded-xl shadow px-3 py-2 flex items-center justify-between gap-2 sm:col-span-2 lg:col-span-1">
               <span className="text-gray-600 truncate">{session.user.email}</span>
               <button onClick={signOut} className="px-3 py-2 h-10 rounded-xl bg-gray-100 hover:bg-gray-200 shrink-0">Wyloguj</button>
@@ -795,7 +844,7 @@ export default function App() {
                   {f.name}
                 </button>
                 <div className="flex items-center gap-2">
-                  {/* NOWY PRZYCISK 30+ — z listy 1000 */}
+                  {/* 30+ z listy 1000 */}
                   <button
                     className={`px-2 py-1 h-9 rounded-lg border ${activeFolderId===f.id ? 'bg-white/10' : 'hover:bg-white'}`}
                     onClick={() => generate30IntoFolder(f)}
@@ -880,10 +929,19 @@ export default function App() {
               </div>
 
               <p className="text-xs text-gray-500 mt-2">
-                Oczekiwane nagłówki: <code>Przód</code>, <code>Tył</code>.
+                Oczekiwane nagłówki: <code>Przód</code>, <code>Tył</code>. (Kolumny <code>front</code>/<code>back</code> też zadziałają)
               </p>
-              {!importFolderId && (
-                <p className="text-xs text-red-600 mt-1">Wybór folderu jest wymagany, aby wczytać plik.</p>
+
+              {/* Pasek postępu importu (bez procentów) */}
+              {importProgress.running && (
+                <div className="mt-3">
+                  <div className="text-xs text-gray-700 mb-1">
+                    Zaimportowano: {importProgress.done} rekordów…
+                  </div>
+                  <div className="w-full h-2 bg-gray-200 rounded overflow-hidden">
+                    <div className="h-2 bg-emerald-500 animate-pulse w-1/2" />
+                  </div>
+                </div>
               )}
             </div>
 
