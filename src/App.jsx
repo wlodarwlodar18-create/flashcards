@@ -14,6 +14,7 @@ export default function App() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
+  const [ownerEmail, setOwnerEmail] = useState('')
   const [ownerPassword, setOwnerPassword] = useState('')
 
 async function signInWithPassword(e) {
@@ -21,7 +22,7 @@ async function signInWithPassword(e) {
   setLoading(true)
   setError('')
   const { error } = await supabase.auth.signInWithPassword({
-    email,
+    email: ownerEmail,
     password: ownerPassword
   })
   setLoading(false)
@@ -204,13 +205,13 @@ async function signInWithPassword(e) {
 <p className="text-sm font-semibold">Logowanie właściciela (e-mail + hasło)</p>
 <form onSubmit={signInWithPassword} className="mt-2 space-y-2">
   <input
-    type="email"
-    required
-    placeholder="twoj@email.pl"
-    value={email}
-    onChange={(e) => setEmail(e.target.value)}
-    className="w-full border rounded-xl px-3 py-2"
-  />
+  type="email"
+  required
+  placeholder="twoj@email.pl"
+  value={ownerEmail}
+  onChange={(e) => setOwnerEmail(e.target.value)}
+  className="w-full border rounded-xl px-3 py-2"
+/>
   <input
     type="password"
     required
