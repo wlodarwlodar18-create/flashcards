@@ -44,7 +44,7 @@ export default function App() {
   // dodawanie folderu
   const [newFolderName, setNewFolderName] = useState('')
 
-  // import CSV → wybrany folder docelowy
+  // import CSV → WYBRANY FOLDER (WYMAGANY)
   const [importFolderId, setImportFolderId] = useState('')
 
   // owner-login (opcjonalnie)
@@ -220,65 +220,60 @@ export default function App() {
     })
   }
 
+  // ===== IMPORT CSV — WYMAGA WYBRANIA FOLDERU
   async function handleCSVUpload(e) {
     const file = e.target.files?.[0]
     if (!file) return
+
+    if (!importFolderId) {
+      setError('Wybierz folder dla importu.')
+      alert('Najpierw wybierz folder, do którego zaimportuję fiszki.')
+      e.target.value = ''
+      return
+    }
+
     setLoading(true); setError('')
     try {
       const rows = await parseCSV(file) // oczekuje: Przód, Tył (lub front, back)
-      // mapowanie folder_name -> folder_id (na wypadek braku wyboru w select)
-      const nameToId = new Map(folders.map(f => [f.name, f.id]))
-
-      // jeśli CSV ma foldery po nazwie i nie wybrałeś folderu w select, stworzymy brakujące
-      const newFoldersToCreate = []
-      if (!importFolderId) {
-        rows.forEach(r => {
-          const name = (r.folder_name || '').toString().trim()
-          if (name && !nameToId.has(name)) newFoldersToCreate.push(name)
-        })
-        if (newFoldersToCreate.length) {
-          const insert = newFoldersToCreate
-            .filter((v, i, a) => a.indexOf(v) === i)
-            .map(n => ({ id: uuidv4(), user_id: session.user.id, name: n }))
-          const { data: created, error } = await supabase.from('folders').insert(insert).select('id,name')
-          if (error) throw error
-          created.forEach(f => nameToId.set(f.name, f.id))
-          await fetchFolders()
-        }
-      }
 
       const cleaned = rows
         .map(r => {
-          // Obsługa polskich nagłówków + kompatybilność ze starymi
+          // PL + kompatybilność ENG
           const front = (r['Przód'] ?? r['Przod'] ?? r.front ?? '').toString().trim()
           const back  = (r['Tył']   ?? r['Tyl']   ?? r.back  ?? '').toString().trim()
-          const fname = (r.folder_name || '').toString().trim()
           const known = String(r.known || '').toLowerCase() === 'true'
-
-          let folder_id = null
-          if (importFolderId) {
-            folder_id = importFolderId
-          } else if (fname) {
-            folder_id = nameToId.get(fname) || null
-          }
-
-          return { front, back, known, folder_id }
+          return { front, back, known }
         })
         .filter(r => r.front && r.back)
 
-      const payload = cleaned.map(r => ({ id: uuidv4(), user_id: session.user.id, ...r }))
+      if (!cleaned.length) {
+        throw new Error('Plik nie zawiera poprawnych wierszy (kolumny „Przód/Tył” lub „front/back”).')
+      }
+
+      // WSZYSTKO trafia do WYBRANEGO folderu
+      const payload = cleaned.map(r => ({
+        id: uuidv4(),
+        user_id: session.user.id,
+        front: r.front,
+        back: r.back,
+        known: r.known,
+        folder_id: importFolderId
+      }))
+
       const chunkSize = 500
       for (let i = 0; i < payload.length; i += chunkSize) {
         const chunk = payload.slice(i, i + chunkSize)
         const { error } = await supabase.from('flashcards').insert(chunk)
         if (error) throw error
       }
+
       await fetchCards()
-      alert(`Zaimportowano ${payload.length} fiszek.`)
+      alert(`Zaimportowano ${payload.length} fiszek do wybranego folderu.`)
     } catch (err) {
       setError(err.message)
     } finally {
-      setLoading(false); e.target.value = ''
+      setLoading(false)
+      e.target.value = ''
     }
   }
 
@@ -480,24 +475,36 @@ export default function App() {
               <button className="px-4 py-2 rounded-xl bg-black text-white">Dodaj</button>
             </form>
 
-            {/* Import CSV z wyborem folderu */}
+            {/* Import CSV – WYMAGA WYBORU FOLDERU */}
             <div className="mt-4">
               <label className="text-sm font-medium">Import CSV (Przód, Tył)</label>
-              <div className="mt-2 flex flex-col sm:flex-row gap-2">
+              <div className="mt-2 flex flex-col sm:flex-row gap-2 items-start">
                 <select
                   className="border rounded-xl px-3 py-2"
                   value={importFolderId}
                   onChange={(e) => setImportFolderId(e.target.value)}
+                  required
                   title="Wybierz folder, do którego trafi cały import"
                 >
-                  <option value="">(wybierz folder dla importu — opcjonalnie)</option>
+                  <option value="">(WYBIERZ FOLDER DLA IMPORTU — WYMAGANE)</option>
                   {folders.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
                 </select>
-                <input type="file" accept=".csv" onChange={handleCSVUpload} className="block" />
+
+                <input
+                  type="file"
+                  accept=".csv"
+                  onChange={handleCSVUpload}
+                  className="block"
+                  disabled={!importFolderId}
+                  title={!importFolderId ? 'Najpierw wybierz folder' : 'Wybierz plik CSV'}
+                />
               </div>
               <p className="text-xs text-gray-500 mt-1">
-                Oczekiwane nagłówki: <code>Przód</code>, <code>Tył</code>. (Działają też stare: <code>front</code>, <code>back</code>).
+                Oczekiwane nagłówki: <code>Przód</code>, <code>Tył</code>. (Działają też: <code>front</code>, <code>back</code>).
               </p>
+              {!importFolderId && (
+                <p className="text-xs text-red-600 mt-1">Wybór folderu jest wymagany, aby wczytać plik.</p>
+              )}
             </div>
 
             {loading && <p className="text-sm text-gray-600 mt-2">Pracuję…</p>}
