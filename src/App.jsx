@@ -84,7 +84,7 @@ export default function App() {
   const [shuffleOnLoad, setShuffleOnLoad] = useState(true)
   const [firstLoad, setFirstLoad] = useState(true)
 
-  // TTS języki (UI przeniesione pod „Dodaj fiszkę”)
+  // TTS języki (UI na dole w „Dodaj fiszkę”)
   const [ttsFrontLang, setTtsFrontLang] = useState('auto')
   const [ttsBackLang, setTtsBackLang] = useState('auto')
 
@@ -494,11 +494,11 @@ export default function App() {
     if (!has) return <p className="text-sm text-gray-500">Brak fiszek do przeglądu.</p>
 
     const containerClasses =
-      `w-full rounded-2xl shadow p-6 min-h-[160px] flex items-center justify-center text-center border 
+      `w-full rounded-2xl shadow p-5 sm:p-6 min-h-[150px] sm:min-h-[160px] flex items-center justify-center text-center border 
        ${showBack ? 'bg-sky-50 border-sky-200' : 'bg-emerald-50 border-emerald-200'}`
 
     const badgeClasses =
-      `absolute top-3 right-3 text-xs px-2 py-1 rounded-full border 
+      `absolute top-2 sm:top-3 right-2 sm:right-3 text-xs px-2 py-1 rounded-full border 
        ${showBack ? 'bg-sky-100 border-sky-200 text-sky-800' : 'bg-emerald-100 border-emerald-200 text-emerald-800'}`
 
     const speakVisible = () => {
@@ -508,43 +508,43 @@ export default function App() {
     }
 
     return (
-      <div className="mt-6">
+      <div className="mt-4 sm:mt-6">
         <div
           className={`${containerClasses} relative cursor-pointer`}
           onClick={() => setShowBack(s => !s)}
           title="Kliknij, aby przełączyć front/back"
         >
           <span className={badgeClasses}>{showBack ? 'Tył' : 'Przód'}</span>
-          <div className="text-xl leading-relaxed max-w-[95%]">
+          <div className="text-lg sm:text-xl leading-relaxed max-w-[95%]">
             {showBack ? card.back : card.front}
           </div>
         </div>
 
-        <div className="flex flex-wrap gap-2 mt-4 items-center">
+        {/* Pasek akcji – responsywny */}
+        <div className="mt-3 sm:mt-4 grid grid-cols-2 sm:flex sm:flex-wrap gap-2 sm:gap-3 items-center">
           <button
             ref={nextBtnRef}
-            className="px-3 py-2 rounded-xl bg-gray-100 hover:bg-gray-200"
+            className="px-3 py-2 h-10 rounded-xl bg-gray-100 hover:bg-gray-200"
             onClick={gotoNextNow}
             title="Przerwij i przejdź do następnej"
           >
             Następna
           </button>
           <button
-            className="px-3 py-2 rounded-xl bg-gray-100 hover:bg-gray-200"
+            className="px-3 py-2 h-10 rounded-xl bg-gray-100 hover:bg-gray-200"
             onClick={() => setShowBack(s => !s)}
           >
             Pokaż
           </button>
           <button
-            className="px-3 py-2 rounded-xl bg-gray-100 hover:bg-gray-200"
+            className="px-3 py-2 h-10 rounded-xl bg-gray-100 hover:bg-gray-200"
             onClick={speakVisible}
             title="Przeczytaj aktualnie widoczną stronę"
           >
             Czytaj
           </button>
-
           <button
-            className={`px-3 py-2 rounded-xl ${autoMode ? 'bg-amber-600 text-white hover:bg-amber-500' : 'bg-amber-100 hover:bg-amber-200 text-amber-900'}`}
+            className={`px-3 py-2 h-10 rounded-xl ${autoMode ? 'bg-amber-600 text-white hover:bg-amber-500' : 'bg-amber-100 hover:bg-amber-200 text-amber-900'}`}
             onClick={() => {
               window.speechSynthesis?.cancel?.()
               setAutoMode(v => !v)
@@ -553,9 +553,8 @@ export default function App() {
           >
             {autoMode ? 'Stop (Tryb auto)' : 'Tryb auto'}
           </button>
-
           <button
-            className={`px-3 py-2 rounded-xl ${card.known ? 'bg-emerald-600 text-white' : 'bg-gray-200 text-black hover:bg-gray-300'}`}
+            className={`px-3 py-2 h-10 rounded-xl ${card.known ? 'bg-emerald-600 text-white' : 'bg-gray-200 text-black hover:bg-gray-300'}`}
             onClick={() => toggleKnown(card)}
             title="Przełącz status zapamiętania tej fiszki"
           >
@@ -630,49 +629,60 @@ export default function App() {
 
   return (
     <main className="min-h-screen bg-gradient-to-b from-slate-50 to-slate-100 p-4">
-      <div className="max-w-5xl mx-auto">
-        <header className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+      <div className="max-w-6xl mx-auto">
+        {/* Header — responsywna siatka kontrolek */}
+        <header className="flex flex-col gap-3">
           <h1 className="text-2xl font-bold">Twoje fiszki</h1>
-          <div className="flex flex-wrap items-center gap-3">
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {/* Pokaż */}
             <div className="text-sm bg-white rounded-xl shadow px-3 py-2 flex items-center gap-2">
-              <span>Pokaż:</span>
-              <select className="border rounded-lg px-2 py-1 h-10" value={showFilter} onChange={(e)=>setShowFilter(e.target.value)}>
+              <span className="whitespace-nowrap">Pokaż:</span>
+              <select className="border rounded-lg px-2 py-1 h-10 w-full" value={showFilter} onChange={(e)=>setShowFilter(e.target.value)}>
                 <option value="all">Wszystkie</option>
                 <option value="unknown">Niezapamiętane</option>
                 <option value="known">Zapamiętane</option>
               </select>
             </div>
+
+            {/* Najpierw */}
             <div className="text-sm bg-white rounded-xl shadow px-3 py-2 flex items-center gap-2">
-              <span>Najpierw:</span>
-              <select className="border rounded-lg px-2 py-1 h-10" value={sidePref} onChange={(e)=>setSidePref(e.target.value)}>
+              <span className="whitespace-nowrap">Najpierw:</span>
+              <select className="border rounded-lg px-2 py-1 h-10 w-full" value={sidePref} onChange={(e)=>setSidePref(e.target.value)}>
                 <option value="front">Przód</option>
                 <option value="back">Tył</option>
                 <option value="random">Losowo</option>
               </select>
             </div>
-            <div className="text-sm bg-white rounded-xl shadow px-3 py-2 flex items-center gap-3">
+
+            {/* Losowanie */}
+            <div className="text-sm bg-white rounded-xl shadow px-3 py-2 flex items-center justify-between gap-2">
               <label className="flex items-center gap-2 cursor-pointer">
                 <input type="checkbox" checked={shuffleOnLoad} onChange={(e)=>setShuffleOnLoad(e.target.checked)} />
-                Losuj przy starcie
+                <span className="whitespace-nowrap">Losuj przy starcie</span>
               </label>
               <button
                 type="button"
-                className="px-3 py-1 rounded-lg border hover:bg-gray-50 h-10"
+                className="px-3 py-1 h-10 rounded-lg border hover:bg-gray-50 shrink-0"
                 onClick={() => { setCards(prev => shuffle(prev)); setReviewIdx(0) }}
                 title="Przetasuj aktualną listę fiszek"
               >
                 Tasuj teraz
               </button>
             </div>
-            <div className="text-sm bg-white rounded-xl shadow px-3 py-2 flex items-center gap-2">
-              <span>Folder:</span>
-              <select className="border rounded-lg px-2 py-1 h-10" value={activeFolderId} onChange={(e)=>setActiveFolderId(e.target.value)}>
+
+            {/* Folder */}
+            <div className="text-sm bg-white rounded-xl shadow px-3 py-2 flex items-center gap-2 sm:col-span-2 lg:col-span-1">
+              <span className="whitespace-nowrap">Folder:</span>
+              <select className="border rounded-lg px-2 py-1 h-10 w-full" value={activeFolderId} onChange={(e)=>setActiveFolderId(e.target.value)}>
                 {foldersForSelect.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
               </select>
             </div>
-            <div className="flex items-center gap-3">
-              <span className="text-sm text-gray-600 hidden sm:inline">{session.user.email}</span>
-              <button onClick={signOut} className="px-3 py-2 h-10 rounded-xl bg-white shadow hover:bg-gray-50">Wyloguj</button>
+
+            {/* User + Wyloguj */}
+            <div className="text-sm bg-white rounded-xl shadow px-3 py-2 flex items-center justify-between gap-2 sm:col-span-2 lg:col-span-1">
+              <span className="text-gray-600 truncate">{session.user.email}</span>
+              <button onClick={signOut} className="px-3 py-2 h-10 rounded-xl bg-gray-100 hover:bg-gray-200 shrink-0">Wyloguj</button>
             </div>
           </div>
         </header>
@@ -692,7 +702,7 @@ export default function App() {
             </button>
           </form>
 
-          <ul className="mt-3 grid sm:grid-cols-2 lg:grid-cols-3 gap-2 text-sm">
+          <ul className="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 text-sm">
             {folders.map(f => (
               <li key={f.id} className={`flex items-center justify-between px-3 py-2 rounded-xl border ${activeFolderId===f.id?'bg-black text-white':'bg-gray-50'}`}>
                 <button
@@ -703,7 +713,7 @@ export default function App() {
                   {f.name}
                 </button>
                 <button
-                  className={`ml-2 px-2 py-1 rounded-lg border ${activeFolderId===f.id ? 'bg-white/10' : 'hover:bg-white'}`}
+                  className={`ml-2 px-2 py-1 h-9 rounded-lg border ${activeFolderId===f.id ? 'bg-white/10' : 'hover:bg-white'}`}
                   onClick={() => deleteFolder(f.id, f.name)}
                   title="Usuń folder"
                 >
@@ -737,9 +747,11 @@ export default function App() {
             {/* Import CSV – WYMAGA WYBORU FOLDERU */}
             <div className="mt-4">
               <label className="text-sm font-medium">Import CSV (Przód, Tył)</label>
-              <div className="mt-2 flex flex-col sm:flex-row gap-2 sm:items-center">
+
+              {/* Wiersz importu — responsywny i „nierozjeżdżalny” */}
+              <div className="mt-2 flex flex-col lg:flex-row gap-2 lg:items-center">
                 <select
-                  className="border rounded-xl px-3 h-10"
+                  className="border rounded-xl px-3 h-10 w-full lg:w-auto"
                   value={importFolderId}
                   onChange={(e) => setImportFolderId(e.target.value)}
                   required
@@ -751,7 +763,7 @@ export default function App() {
 
                 {/* Stylizowany przycisk do wyboru pliku */}
                 <label
-                  className={`flex items-center justify-center px-4 h-10 rounded-xl border bg-white cursor-pointer hover:bg-gray-50 w-full sm:w-auto ${!importFolderId ? 'opacity-60 cursor-not-allowed' : ''}`}
+                  className={`inline-flex items-center justify-center gap-2 px-4 h-10 rounded-xl border bg-white cursor-pointer hover:bg-gray-50 whitespace-nowrap shrink-0 w-full lg:w-auto ${!importFolderId ? 'opacity-60 cursor-not-allowed' : ''}`}
                   title={!importFolderId ? 'Najpierw wybierz folder' : 'Wybierz plik CSV'}
                 >
                   <span className="text-sm text-gray-700">Wybierz plik</span>
@@ -763,10 +775,13 @@ export default function App() {
                     disabled={!importFolderId}
                   />
                 </label>
+
+                {/* Info tekst — zawija się ładnie na telefonie */}
+                <p className="text-xs text-gray-500 lg:ml-auto">
+                  Oczekiwane nagłówki: <code>Przód</code>, <code>Tył</code>.
+                </p>
               </div>
-              <p className="text-xs text-gray-500 mt-1">
-                Oczekiwane nagłówki: <code>Przód</code>, <code>Tył</code>.
-              </p>
+
               {!importFolderId && (
                 <p className="text-xs text-red-600 mt-1">Wybór folderu jest wymagany, aby wczytać plik.</p>
               )}
@@ -779,7 +794,7 @@ export default function App() {
                 <label className="flex items-center justify-between gap-2">
                   <span className="text-sm">Przód:</span>
                   <select
-                    className="border rounded-lg px-2 py-1 h-9"
+                    className="border rounded-lg px-2 py-1 h-10"
                     value={ttsFrontLang}
                     onChange={(e)=>setTtsFrontLang(e.target.value)}
                     title="Wymuś język czytania dla przodu"
@@ -799,7 +814,7 @@ export default function App() {
                 <label className="flex items-center justify-between gap-2">
                   <span className="text-sm">Tył:</span>
                   <select
-                    className="border rounded-lg px-2 py-1 h-9"
+                    className="border rounded-lg px-2 py-1 h-10"
                     value={ttsBackLang}
                     onChange={(e)=>setTtsBackLang(e.target.value)}
                     title="Wymuś język czytania dla tyłu"
@@ -845,12 +860,12 @@ export default function App() {
               {filtered.map(card => (
                 <motion.li key={card.id} className="py-3 flex items-start justify-between gap-3"
                   initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}>
-                  <div className="flex-1">
-                    <p className="font-medium">{card.front}</p>
-                    <p className="text-sm text-gray-600 mt-1">{card.back}</p>
+                  <div className="flex-1 min-w-0">
+                    <p className="font-medium break-words">{card.front}</p>
+                    <p className="text-sm text-gray-600 mt-1 break-words">{card.back}</p>
                     <p className="text-xs text-gray-500 mt-1">{card.known ? '✅ Zapamiętana' : '🕑 Do nauki'}</p>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 shrink-0">
                     <label className="text-xs flex items-center gap-1">
                       <input type="checkbox" checked={!!card.known} onChange={() => toggleKnown(card)} />
                       Zapamiętana
