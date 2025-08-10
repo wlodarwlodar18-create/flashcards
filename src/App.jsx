@@ -18,7 +18,7 @@ function shuffle(arr) {
   return a
 }
 
-/* Usuwanie diakrytyków */
+/* Usuwanie diakrytyków (?)*/
 function stripDiacritics(s) {
   return (s || '')
     .normalize('NFD')
