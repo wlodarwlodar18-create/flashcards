@@ -18,22 +18,47 @@ function shuffle(arr) {
   return a
 }
 
-/* Heurystyczne wykrywanie języka po znakach */
+/* Usuwanie diakrytyków (np. ą→a) */
+function stripDiacritics(s) {
+  return (s || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+}
+
+/* Heurystyczne wykrywanie języka + polskie wzorce bez ogonków */
 function detectLang(text) {
-  const s = (text || '').trim()
-  if (!s) return 'en-US'
-  if (/[\u0400-\u04FF]/.test(s)) return 'ru-RU'   // cyrylica
-  if (/[\u0600-\u06FF]/.test(s)) return 'ar-SA'   // arabski
-  if (/[\u4E00-\u9FFF]/.test(s)) return 'zh-CN'   // chiński
-  if (/[\u3040-\u30FF]/.test(s)) return 'ja-JP'   // japoński
-  if (/[\uAC00-\uD7AF]/.test(s)) return 'ko-KR'   // koreański
-  if (/[ąćęłńóśźż]/i.test(s)) return 'pl-PL'
-  if (/[äöüß]/i.test(s)) return 'de-DE'
-  if (/[ñáéíóúü]/i.test(s)) return 'es-ES'
-  if (/[çâêëïîôûùéèà]/i.test(s)) return 'fr-FR'
-  if (/[àèéìòù]/i.test(s)) return 'it-IT'
-  if (/[ãõçáéíóú]/i.test(s)) return 'pt-PT'
-  if (/[ğüşıçöİ]/i.test(s)) return 'tr-TR'
+  const raw = (text || '').trim()
+  if (!raw) return 'en-US'
+
+  // Skrypty
+  if (/[\u0400-\u04FF]/.test(raw)) return 'ru-RU'
+  if (/[\u0600-\u06FF]/.test(raw)) return 'ar-SA'
+  if (/[\u4E00-\u9FFF]/.test(raw)) return 'zh-CN'
+  if (/[\u3040-\u30FF]/.test(raw)) return 'ja-JP'
+  if (/[\uAC00-\uD7AF]/.test(raw)) return 'ko-KR'
+
+  // Diakrytyki łacińskie
+  if (/[ąćęłńóśźż]/i.test(raw)) return 'pl-PL'
+  if (/[äöüß]/i.test(raw)) return 'de-DE'
+  if (/[ñáéíóúü]/i.test(raw)) return 'es-ES'
+  if (/[çâêëïîôûùéèà]/i.test(raw)) return 'fr-FR'
+  if (/[àèéìòù]/i.test(raw)) return 'it-IT'
+  if (/[ãõçáéíóú]/i.test(raw)) return 'pt-PT'
+  if (/[ğüşıçöİ]/i.test(raw)) return 'tr-TR'
+
+  // Heurystyka PL bez ogonków
+  const s = stripDiacritics(raw).toLowerCase()
+  const plStop = new Set([
+    'i','w','na','do','nie','tak','jest','sa','byc','mam','masz','moze','mozesz','ktory','ktora','ktore',
+    'zeby','albo','czy','dlaczego','poniewaz','przez','ten','ta','to','te','tam','tutaj','taki','takie',
+    'bardziej','mniej','bardzo','troche','jesli','gdy','kiedy','z','za','po','od','bez','dla','przed'
+  ])
+  const tokens = s.split(/[^a-zA-Z]+/).filter(Boolean)
+  let plHits = 0
+  for (const t of tokens) if (plStop.has(t)) plHits++
+  const digraphs = (s.match(/rz|sz|cz|dz|dzw|dzdz|ch|nia|owie|ami|ego|emu|ach|cie|osci|alny|owy/gi) || []).length
+  if (plHits >= 2 || digraphs >= 2) return 'pl-PL'
+
   return 'en-US'
 }
 
@@ -92,8 +117,8 @@ export default function App() {
     return () => { window.speechSynthesis.onvoiceschanged = null }
   }, [])
 
-  // Tryb 10s
-  const [tenSecMode, setTenSecMode] = useState(false)
+  // Tryb 7s
+  const [sevenSecMode, setSevenSecMode] = useState(false)
 
   // init
   useEffect(() => {
@@ -192,13 +217,10 @@ export default function App() {
   async function handleAddCard(e) {
     e.preventDefault()
     if (!newFront.trim() || !newBack.trim()) return
-    if (!newCardFolderId) { // folder WYMAGANY
-      setError('Wybierz folder dla tej fiszki.')
-      return
-    }
+    if (!newCardFolderId) { setError('Wybierz folder dla tej fiszki.'); return }
     try {
       await addCard(newFront.trim(), newBack.trim(), newCardFolderId)
-      setNewFront(''); setNewBack(''); setNewCardFolderId('') // reset wyboru
+      setNewFront(''); setNewBack(''); setNewCardFolderId('')
       fetchCards()
     } catch (err) { setError(err.message) }
   }
@@ -284,18 +306,15 @@ export default function App() {
   async function handleCSVUpload(e) {
     const file = e.target.files?.[0]
     if (!file) return
-
     if (!importFolderId) {
       setError('Wybierz folder dla importu.')
       alert('Najpierw wybierz folder, do którego zaimportuję fiszki.')
       e.target.value = ''
       return
     }
-
     setLoading(true); setError('')
     try {
       const rows = await parseCSV(file) // oczekuje: Przód, Tył (lub front, back)
-
       const cleaned = rows
         .map(r => {
           const front = (r['Przód'] ?? r['Przod'] ?? r.front ?? '').toString().trim()
@@ -304,10 +323,7 @@ export default function App() {
           return { front, back, known }
         })
         .filter(r => r.front && r.back)
-
-      if (!cleaned.length) {
-        throw new Error('Plik nie zawiera poprawnych wierszy (kolumny „Przód/Tył”).')
-      }
+      if (!cleaned.length) throw new Error('Plik nie zawiera poprawnych wierszy (kolumny „Przód/Tył”).')
 
       const payload = cleaned.map(r => ({
         id: uuidv4(),
@@ -324,7 +340,6 @@ export default function App() {
         const { error } = await supabase.from('flashcards').insert(chunk)
         if (error) throw error
       }
-
       await fetchCards()
       alert(`Zaimportowano ${payload.length} fiszek do wybranego folderu.`)
     } catch (err) {
@@ -344,26 +359,25 @@ export default function App() {
     if (showFilter === 'known') arr = arr.filter(c => c.known)
     if (showFilter === 'unknown') arr = arr.filter(c => !c.known)
     const k = q.trim().toLowerCase()
-    if (k) {
-      arr = arr.filter(c => c.front.toLowerCase().includes(k) || c.back.toLowerCase().includes(k))
-    }
+    if (k) arr = arr.filter(c => c.front.toLowerCase().includes(k) || c.back.toLowerCase().includes(k))
     return arr
   }, [cards, activeFolderId, showFilter, q])
 
-  // ===== Tryb nauki — karta + Tryb 10s
-  function Review({ tenSecMode, onStopTenSec }) {
+  // ===== Tryb nauki — karta + Tryb 7s
+  function Review({ sevenSecMode, onStopSevenSec }) {
     const has = filtered.length > 0
     const safeLen = Math.max(1, filtered.length)
     const card = filtered[reviewIdx % safeLen]
     const [showBack, setShowBack] = useState(false)
 
     // timery i mowa
-    const timerRef = useRef(null)
+    const timerA = useRef(null) // 7s
+    const timerB = useRef(null) // 3s
     const startedAtIdxRef = useRef(null)
     const leftRef = useRef(0)
     const utterRef = useRef(null)
 
-    // startowa strona wg preferencji
+    // startowa strona wg preferencji przy każdej karcie
     useEffect(() => {
       if (!has) return
       if (sidePref === 'front') setShowBack(false)
@@ -374,14 +388,15 @@ export default function App() {
     // sprzątanie
     useEffect(() => {
       return () => {
-        if (timerRef.current) clearTimeout(timerRef.current)
+        if (timerA.current) clearTimeout(timerA.current)
+        if (timerB.current) clearTimeout(timerB.current)
         if (utterRef.current) window.speechSynthesis.cancel()
       }
     }, [])
 
     const speak = (text) => {
-      if (!text) return
-      if (!('speechSynthesis' in window)) return
+      if (!text) return null
+      if (!('speechSynthesis' in window)) return null
       const lang = detectLang(text)
       const voice = pickVoice(voices, lang)
       const u = new SpeechSynthesisUtterance(text)
@@ -393,50 +408,59 @@ export default function App() {
       return u
     }
 
-    // pętla trybu 10s: co 10s flip -> czytaj odwrotną stronę -> next
+    // LOGIKA TRYBU 7s:
+    // - faza A (7 s): pokazuje aktualną stronę i ją czyta
+    // - faza B (3 s): flip, pokazuje drugą stronę i ją czyta
+    // - przejście do następnej; po jednym okrążeniu koniec trybu
     useEffect(() => {
-      if (!tenSecMode || !has) return
+      if (!sevenSecMode || !has) return
 
-      if (timerRef.current) clearTimeout(timerRef.current)
       if (startedAtIdxRef.current == null) {
         startedAtIdxRef.current = reviewIdx % filtered.length
         leftRef.current = filtered.length
       }
 
-      timerRef.current = setTimeout(() => {
+      // wyczyść stare timery
+      if (timerA.current) clearTimeout(timerA.current)
+      if (timerB.current) clearTimeout(timerB.current)
+
+      // FAZA A — 7 s: czytaj aktualnie widoczną stronę
+      const textA = showBack ? card.back : card.front
+      speak(textA)
+
+      timerA.current = setTimeout(() => {
+        // FAZA B — flip + 3 s: czytaj drugą stronę
         const newShowBack = !showBack
         setShowBack(newShowBack)
 
-        // czytaj ODWROTNĄ względem tego co pokazujemy po flipie
-        const toSpeak = newShowBack ? card.front : card.back
-        const u = speak(toSpeak)
+        const textB = newShowBack ? card.back : card.front
+        speak(textB)
 
-        const goNext = () => {
+        timerB.current = setTimeout(() => {
+          // przejście do następnej
           leftRef.current = Math.max(0, leftRef.current - 1)
           const nextIdx = (reviewIdx + 1) % filtered.length
           setReviewIdx(nextIdx)
 
+          // zakończenie po jednym okrążeniu
           if (leftRef.current === 0 || nextIdx === startedAtIdxRef.current) {
-            onStopTenSec?.()
-            if (timerRef.current) clearTimeout(timerRef.current)
-            timerRef.current = null
+            onStopSevenSec?.()
+            if (timerA.current) clearTimeout(timerA.current)
+            if (timerB.current) clearTimeout(timerB.current)
+            timerA.current = null
+            timerB.current = null
             startedAtIdxRef.current = null
             leftRef.current = 0
           }
-        }
-
-        if (u) {
-          u.onend = () => goNext()
-          setTimeout(() => { try { u.onend && u.onend() } catch {} }, 1200)
-        } else {
-          setTimeout(goNext, 1200)
-        }
-      }, 10000)
+        }, 3000) // 3 s druga strona
+      }, 7000) // 7 s pierwsza strona
 
       return () => {
-        if (timerRef.current) clearTimeout(timerRef.current)
+        if (timerA.current) clearTimeout(timerA.current)
+        if (timerB.current) clearTimeout(timerB.current)
       }
-    }, [tenSecMode, reviewIdx, filtered, showBack]) // eslint-disable-line
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [sevenSecMode, reviewIdx, filtered, showBack])
 
     if (!has) return <p className="text-sm text-gray-500">Brak fiszek do przeglądu.</p>
 
@@ -490,10 +514,10 @@ export default function App() {
             className="px-3 py-2 rounded-xl bg-amber-600 text-white hover:bg-amber-500"
             onClick={() => {
               window.speechSynthesis?.cancel?.()
-              setTenSecMode(v => !v)
+              setSevenSecMode(v => !v)
             }}
           >
-            {tenSecMode ? 'Stop 10s' : 'Tryb 10s'}
+            {sevenSecMode ? 'Stop 7s' : 'Tryb 7s'}
           </button>
           <button
             className="px-3 py-2 rounded-xl bg-emerald-600 text-white disabled:opacity-50"
@@ -693,8 +717,8 @@ export default function App() {
             <h2 className="font-semibold mb-3">Tryb nauki</h2>
             <input className="w-full border rounded-xl px-3 h-10 mb-3" placeholder="Szukaj w fiszkach…" value={q} onChange={e => setQ(e.target.value)} />
             <Review
-              tenSecMode={tenSecMode}
-              onStopTenSec={() => setTenSecMode(false)}
+              sevenSecMode={sevenSecMode}
+              onStopSevenSec={() => setSevenSecMode(false)}
             />
           </div>
         </section>
