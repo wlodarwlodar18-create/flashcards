@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { createClient } from '@supabase/supabase-js'
 import Papa from 'papaparse'
 import { motion, AnimatePresence } from 'framer-motion'
@@ -18,17 +18,15 @@ function shuffle(arr) {
   return a
 }
 
-/* Heurystyczne wykrywanie języka na podstawie znaków */
+/* Heurystyczne wykrywanie języka po znakach */
 function detectLang(text) {
   const s = (text || '').trim()
   if (!s) return 'en-US'
-  // Skrypty
-  if (/[\u0400-\u04FF]/.test(s)) return 'ru-RU'          // cyrylica (ros/ukr/...)
-  if (/[\u0600-\u06FF]/.test(s)) return 'ar-SA'          // arabski
-  if (/[\u4E00-\u9FFF]/.test(s)) return 'zh-CN'          // han (zh)
-  if (/[\u3040-\u30FF]/.test(s)) return 'ja-JP'          // japoński
-  if (/[\uAC00-\uD7AF]/.test(s)) return 'ko-KR'          // koreański
-  // Diakrytyki łacińskie
+  if (/[\u0400-\u04FF]/.test(s)) return 'ru-RU'   // cyrylica
+  if (/[\u0600-\u06FF]/.test(s)) return 'ar-SA'   // arabski
+  if (/[\u4E00-\u9FFF]/.test(s)) return 'zh-CN'   // chiński
+  if (/[\u3040-\u30FF]/.test(s)) return 'ja-JP'   // japoński
+  if (/[\uAC00-\uD7AF]/.test(s)) return 'ko-KR'   // koreański
   if (/[ąćęłńóśźż]/i.test(s)) return 'pl-PL'
   if (/[äöüß]/i.test(s)) return 'de-DE'
   if (/[ñáéíóúü]/i.test(s)) return 'es-ES'
@@ -36,20 +34,17 @@ function detectLang(text) {
   if (/[àèéìòù]/i.test(s)) return 'it-IT'
   if (/[ãõçáéíóú]/i.test(s)) return 'pt-PT'
   if (/[ğüşıçöİ]/i.test(s)) return 'tr-TR'
-  // Domyślnie angielski
   return 'en-US'
 }
 
-/* Wybór głosu pasującego do języka */
+/* Dobór głosu do języka */
 function pickVoice(voices, lang) {
   if (!voices || !voices.length) return null
-  // Najpierw pełne dopasowanie (np. "pl-PL")
-  const exact = voices.find(v => v.lang.toLowerCase() === lang.toLowerCase())
+  const exact = voices.find(v => v.lang?.toLowerCase() === lang.toLowerCase())
   if (exact) return exact
-  // Potem prefiks (np. "pl")
-  const pref = voices.find(v => v.lang.toLowerCase().startsWith(lang.split('-')[0].toLowerCase()))
+  const pref = voices.find(v => v.lang?.toLowerCase().startsWith(lang.split('-')[0].toLowerCase()))
   if (pref) return pref
-  return voices[0] // cokolwiek
+  return voices[0]
 }
 
 export default function App() {
@@ -60,7 +55,7 @@ export default function App() {
 
   // preferencje i filtry
   const [showFilter, setShowFilter] = useState('unknown') // 'all' | 'known' | 'unknown'
-  const [sidePref, setSidePref] = useState('front') // 'front' | 'back' | 'random'
+  const [sidePref, setSidePref] = useState('front')       // 'front' | 'back' | 'random'
   const [shuffleOnLoad, setShuffleOnLoad] = useState(true)
   const [firstLoad, setFirstLoad] = useState(true)
 
@@ -87,7 +82,7 @@ export default function App() {
 
   const [reviewIdx, setReviewIdx] = useState(0)
 
-  // Voices (Web Speech API)
+  // Web Speech API — głosy
   const [voices, setVoices] = useState([])
   useEffect(() => {
     if (!('speechSynthesis' in window)) return
@@ -96,6 +91,9 @@ export default function App() {
     window.speechSynthesis.onvoiceschanged = load
     return () => { window.speechSynthesis.onvoiceschanged = null }
   }, [])
+
+  // Tryb 10s
+  const [tenSecMode, setTenSecMode] = useState(false)
 
   // init
   useEffect(() => {
@@ -300,7 +298,6 @@ export default function App() {
 
       const cleaned = rows
         .map(r => {
-          // PL + kompatybilność ENG
           const front = (r['Przód'] ?? r['Przod'] ?? r.front ?? '').toString().trim()
           const back  = (r['Tył']   ?? r['Tyl']   ?? r.back  ?? '').toString().trim()
           const known = String(r.known || '').toLowerCase() === 'true'
@@ -309,10 +306,9 @@ export default function App() {
         .filter(r => r.front && r.back)
 
       if (!cleaned.length) {
-        throw new Error('Plik nie zawiera poprawnych wierszy (kolumny „Przód/Tył” lub „front/back”).')
+        throw new Error('Plik nie zawiera poprawnych wierszy (kolumny „Przód/Tył”).')
       }
 
-      // WSZYSTKO trafia do WYBRANEGO folderu
       const payload = cleaned.map(r => ({
         id: uuidv4(),
         user_id: session.user.id,
@@ -354,20 +350,93 @@ export default function App() {
     return arr
   }, [cards, activeFolderId, showFilter, q])
 
-  // ===== Tryb nauki — bez animacji, pastelowe kolory + CZYTANIE
-  function Review() {
+  // ===== Tryb nauki — karta + Tryb 10s
+  function Review({ tenSecMode, onStopTenSec }) {
     const has = filtered.length > 0
     const safeLen = Math.max(1, filtered.length)
     const card = filtered[reviewIdx % safeLen]
     const [showBack, setShowBack] = useState(false)
 
-    // ustaw startową stronę zgodnie z sidePref
+    // timery i mowa
+    const timerRef = useRef(null)
+    const startedAtIdxRef = useRef(null)
+    const leftRef = useRef(0)
+    const utterRef = useRef(null)
+
+    // startowa strona wg preferencji
     useEffect(() => {
       if (!has) return
       if (sidePref === 'front') setShowBack(false)
       else if (sidePref === 'back') setShowBack(true)
-      else setShowBack(Math.random() < 0.5) // random
+      else setShowBack(Math.random() < 0.5)
     }, [reviewIdx, sidePref, has])
+
+    // sprzątanie
+    useEffect(() => {
+      return () => {
+        if (timerRef.current) clearTimeout(timerRef.current)
+        if (utterRef.current) window.speechSynthesis.cancel()
+      }
+    }, [])
+
+    const speak = (text) => {
+      if (!text) return
+      if (!('speechSynthesis' in window)) return
+      const lang = detectLang(text)
+      const voice = pickVoice(voices, lang)
+      const u = new SpeechSynthesisUtterance(text)
+      u.lang = lang
+      if (voice) u.voice = voice
+      if (utterRef.current) window.speechSynthesis.cancel()
+      utterRef.current = u
+      window.speechSynthesis.speak(u)
+      return u
+    }
+
+    // pętla trybu 10s: co 10s flip -> czytaj odwrotną stronę -> next
+    useEffect(() => {
+      if (!tenSecMode || !has) return
+
+      if (timerRef.current) clearTimeout(timerRef.current)
+      if (startedAtIdxRef.current == null) {
+        startedAtIdxRef.current = reviewIdx % filtered.length
+        leftRef.current = filtered.length
+      }
+
+      timerRef.current = setTimeout(() => {
+        const newShowBack = !showBack
+        setShowBack(newShowBack)
+
+        // czytaj ODWROTNĄ względem tego co pokazujemy po flipie
+        const toSpeak = newShowBack ? card.front : card.back
+        const u = speak(toSpeak)
+
+        const goNext = () => {
+          leftRef.current = Math.max(0, leftRef.current - 1)
+          const nextIdx = (reviewIdx + 1) % filtered.length
+          setReviewIdx(nextIdx)
+
+          if (leftRef.current === 0 || nextIdx === startedAtIdxRef.current) {
+            onStopTenSec?.()
+            if (timerRef.current) clearTimeout(timerRef.current)
+            timerRef.current = null
+            startedAtIdxRef.current = null
+            leftRef.current = 0
+          }
+        }
+
+        if (u) {
+          u.onend = () => goNext()
+          setTimeout(() => { try { u.onend && u.onend() } catch {} }, 1200)
+        } else {
+          setTimeout(goNext, 1200)
+        }
+      }, 10000)
+
+      return () => {
+        if (timerRef.current) clearTimeout(timerRef.current)
+      }
+    }, [tenSecMode, reviewIdx, filtered, showBack]) // eslint-disable-line
 
     if (!has) return <p className="text-sm text-gray-500">Brak fiszek do przeglądu.</p>
 
@@ -379,26 +448,13 @@ export default function App() {
       `absolute top-3 right-3 text-xs px-2 py-1 rounded-full border 
        ${showBack ? 'bg-sky-100 border-sky-200 text-sky-800' : 'bg-emerald-100 border-emerald-200 text-emerald-800'}`
 
-    // Czytanie aktualnie widocznej strony
     const speakVisible = () => {
       const text = showBack ? card.back : card.front
-      if (!text) return
-      if (!('speechSynthesis' in window)) {
-        alert('Twoja przeglądarka nie obsługuje odczytu głosowego (SpeechSynthesis).')
-        return
-      }
-      const lang = detectLang(text)
-      const voice = pickVoice(voices, lang)
-      const u = new SpeechSynthesisUtterance(text)
-      u.lang = lang
-      if (voice) u.voice = voice
-      window.speechSynthesis.cancel()
-      window.speechSynthesis.speak(u)
+      speak(text)
     }
 
     return (
       <div className="mt-6">
-        {/* Karta */}
         <div
           className={`${containerClasses} relative cursor-pointer`}
           onClick={() => setShowBack(s => !s)}
@@ -426,9 +482,18 @@ export default function App() {
           <button
             className="px-3 py-2 rounded-xl bg-gray-100 hover:bg-gray-200"
             onClick={speakVisible}
-            title="Wykryj język przodu/tyłu i przeczytaj"
+            title="Przeczytaj aktualnie widoczną stronę"
           >
             Czytaj
+          </button>
+          <button
+            className="px-3 py-2 rounded-xl bg-amber-600 text-white hover:bg-amber-500"
+            onClick={() => {
+              window.speechSynthesis?.cancel?.()
+              setTenSecMode(v => !v)
+            }}
+          >
+            {tenSecMode ? 'Stop 10s' : 'Tryb 10s'}
           </button>
           <button
             className="px-3 py-2 rounded-xl bg-emerald-600 text-white disabled:opacity-50"
@@ -627,7 +692,10 @@ export default function App() {
           <div className="bg-white rounded-2xl shadow p-4">
             <h2 className="font-semibold mb-3">Tryb nauki</h2>
             <input className="w-full border rounded-xl px-3 h-10 mb-3" placeholder="Szukaj w fiszkach…" value={q} onChange={e => setQ(e.target.value)} />
-            <Review />
+            <Review
+              tenSecMode={tenSecMode}
+              onStopTenSec={() => setTenSecMode(false)}
+            />
           </div>
         </section>
 
