@@ -382,10 +382,10 @@ export default function App() {
           <h1 className="text-2xl font-bold">Fiszki – logowanie</h1>
           <p className="text-sm text-gray-600 mt-2">Podaj e-mail (magic link) albo zaloguj hasłem właściciela.</p>
 
-        {/* Magic link */}
+          {/* Magic link */}
           <form onSubmit={signInWithEmail} className="mt-4 space-y-3">
-            <input type="email" required placeholder="twoj@email.pl" value={email} onChange={(e) => setEmail(e.target.value)} className="w-full border rounded-xl px-3 py-2" />
-            <button disabled={loading} className="w-full rounded-xl px-4 py-2 bg-black text-white disabled:opacity-50">
+            <input type="email" required placeholder="twoj@email.pl" value={email} onChange={(e) => setEmail(e.target.value)} className="w-full border rounded-xl px-3 py-2 h-10" />
+            <button disabled={loading} className="w-full rounded-xl px-4 h-10 bg-black text-white disabled:opacity-50">
               {loading ? 'Wysyłanie…' : 'Wyślij link'}
             </button>
           </form>
@@ -394,9 +394,9 @@ export default function App() {
           <hr className="my-4" />
           <p className="text-sm font-semibold">Logowanie właściciela (e-mail + hasło)</p>
           <form onSubmit={signInWithPassword} className="mt-2 space-y-2">
-            <input type="email" required placeholder="twoj@email.pl" value={ownerEmail} onChange={(e) => setOwnerEmail(e.target.value)} className="w-full border rounded-xl px-3 py-2" />
-            <input type="password" required placeholder="Hasło" value={ownerPassword} onChange={(e) => setOwnerPassword(e.target.value)} className="w-full border rounded-xl px-3 py-2" />
-            <button disabled={loading} className="w-full rounded-xl px-4 py-2 bg-blue-600 text-white disabled:opacity-50">
+            <input type="email" required placeholder="twoj@email.pl" value={ownerEmail} onChange={(e) => setOwnerEmail(e.target.value)} className="w-full border rounded-xl px-3 py-2 h-10" />
+            <input type="password" required placeholder="Hasło" value={ownerPassword} onChange={(e) => setOwnerPassword(e.target.value)} className="w-full border rounded-xl px-3 py-2 h-10" />
+            <button disabled={loading} className="w-full rounded-xl px-4 h-10 bg-blue-600 text-white disabled:opacity-50">
               {loading ? 'Logowanie…' : 'Zaloguj się hasłem'}
             </button>
           </form>
@@ -415,7 +415,7 @@ export default function App() {
           <div className="flex flex-wrap items-center gap-3">
             <div className="text-sm bg-white rounded-xl shadow px-3 py-2 flex items-center gap-2">
               <span>Pokaż:</span>
-              <select className="border rounded-lg px-2 py-1" value={showFilter} onChange={(e)=>setShowFilter(e.target.value)}>
+              <select className="border rounded-lg px-2 py-1 h-10" value={showFilter} onChange={(e)=>setShowFilter(e.target.value)}>
                 <option value="all">Wszystkie</option>
                 <option value="unknown">Niezapamiętane</option>
                 <option value="known">Zapamiętane</option>
@@ -423,7 +423,7 @@ export default function App() {
             </div>
             <div className="text-sm bg-white rounded-xl shadow px-3 py-2 flex items-center gap-2">
               <span>Najpierw:</span>
-              <select className="border rounded-lg px-2 py-1" value={sidePref} onChange={(e)=>setSidePref(e.target.value)}>
+              <select className="border rounded-lg px-2 py-1 h-10" value={sidePref} onChange={(e)=>setSidePref(e.target.value)}>
                 <option value="front">Przód</option>
                 <option value="back">Tył</option>
                 <option value="random">Losowo</option>
@@ -436,7 +436,7 @@ export default function App() {
               </label>
               <button
                 type="button"
-                className="px-3 py-1 rounded-lg border hover:bg-gray-50"
+                className="px-3 py-1 rounded-lg border hover:bg-gray-50 h-10"
                 onClick={() => { setCards(prev => shuffle(prev)); setReviewIdx(0) }}
                 title="Przetasuj aktualną listę fiszek"
               >
@@ -445,13 +445,13 @@ export default function App() {
             </div>
             <div className="text-sm bg-white rounded-xl shadow px-3 py-2 flex items-center gap-2">
               <span>Folder:</span>
-              <select className="border rounded-lg px-2 py-1" value={activeFolderId} onChange={(e)=>setActiveFolderId(e.target.value)}>
+              <select className="border rounded-lg px-2 py-1 h-10" value={activeFolderId} onChange={(e)=>setActiveFolderId(e.target.value)}>
                 {foldersForSelect.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
               </select>
             </div>
             <div className="flex items-center gap-3">
               <span className="text-sm text-gray-600 hidden sm:inline">{session.user.email}</span>
-              <button onClick={signOut} className="px-3 py-2 rounded-xl bg-white shadow hover:bg-gray-50">Wyloguj</button>
+              <button onClick={signOut} className="px-3 py-2 h-10 rounded-xl bg-white shadow hover:bg-gray-50">Wyloguj</button>
             </div>
           </div>
         </header>
@@ -459,9 +459,16 @@ export default function App() {
         {/* Foldery: dodawanie + lista (z usuwaniem) */}
         <section className="mt-6 bg-white rounded-2xl shadow p-4">
           <h2 className="font-semibold mb-3">Foldery</h2>
-          <form onSubmit={addFolder} className="flex gap-2">
-            <input className="flex-1 border rounded-xl px-3 py-2" placeholder="Nazwa folderu (np. Angielski B1)" value={newFolderName} onChange={e=>setNewFolderName(e.target.value)} />
-            <button className="px-4 py-2 rounded-xl bg-black text-white">Dodaj folder</button>
+          <form onSubmit={addFolder} className="flex flex-col sm:flex-row gap-2 sm:items-center">
+            <input
+              className="flex-1 border rounded-xl px-3 h-10"
+              placeholder="Nazwa folderu (np. Angielski B1)"
+              value={newFolderName}
+              onChange={e=>setNewFolderName(e.target.value)}
+            />
+            <button className="px-4 h-10 rounded-xl bg-black text-white w-full sm:w-auto">
+              Dodaj folder
+            </button>
           </form>
 
           <ul className="mt-3 grid sm:grid-cols-2 lg:grid-cols-3 gap-2 text-sm">
@@ -491,10 +498,10 @@ export default function App() {
           <div className="bg-white rounded-2xl shadow p-4">
             <h2 className="font-semibold mb-3">Dodaj fiszkę</h2>
             <form onSubmit={handleAddCard} className="space-y-2">
-              <input className="w-full border rounded-xl px-3 py-2" placeholder="Przód (pytanie)" value={newFront} onChange={e => setNewFront(e.target.value)} />
-              <textarea className="w-full border rounded-xl px-3 py-2" placeholder="Tył (odpowiedź)" value={newBack} onChange={e => setNewBack(e.target.value)} />
+              <input className="w-full border rounded-xl px-3 h-10" placeholder="Przód (pytanie)" value={newFront} onChange={e => setNewFront(e.target.value)} />
+              <textarea className="w-full border rounded-xl px-3 py-2 min-h-[100px]" placeholder="Tył (odpowiedź)" value={newBack} onChange={e => setNewBack(e.target.value)} />
               <select
-                className="w-full border rounded-xl px-3 py-2"
+                className="w-full border rounded-xl px-3 h-10"
                 value={newCardFolderId}
                 onChange={e => setNewCardFolderId(e.target.value)}
                 required
@@ -503,15 +510,15 @@ export default function App() {
                 <option value="" disabled>(WYBIERZ FOLDER — WYMAGANE)</option>
                 {folders.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
               </select>
-              <button className="px-4 py-2 rounded-xl bg-black text-white">Dodaj</button>
+              <button className="px-4 h-10 rounded-xl bg-black text-white">Dodaj</button>
             </form>
 
             {/* Import CSV – WYMAGA WYBORU FOLDERU */}
             <div className="mt-4">
               <label className="text-sm font-medium">Import CSV (Przód, Tył)</label>
-              <div className="mt-2 flex flex-col sm:flex-row gap-2 items-start">
+              <div className="mt-2 flex flex-col sm:flex-row gap-2 sm:items-center">
                 <select
-                  className="border rounded-xl px-3 py-2"
+                  className="border rounded-xl px-3 h-10"
                   value={importFolderId}
                   onChange={(e) => setImportFolderId(e.target.value)}
                   required
@@ -521,14 +528,20 @@ export default function App() {
                   {folders.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
                 </select>
 
-                <input
-                  type="file"
-                  accept=".csv"
-                  onChange={handleCSVUpload}
-                  className="block"
-                  disabled={!importFolderId}
+                {/* Stylizowany przycisk do wyboru pliku */}
+                <label
+                  className={`flex items-center justify-center px-4 h-10 rounded-xl border bg-white cursor-pointer hover:bg-gray-50 w-full sm:w-auto ${!importFolderId ? 'opacity-60 cursor-not-allowed' : ''}`}
                   title={!importFolderId ? 'Najpierw wybierz folder' : 'Wybierz plik CSV'}
-                />
+                >
+                  <span className="text-sm text-gray-700">Wybierz plik</span>
+                  <input
+                    type="file"
+                    accept=".csv"
+                    onChange={handleCSVUpload}
+                    className="hidden"
+                    disabled={!importFolderId}
+                  />
+                </label>
               </div>
               <p className="text-xs text-gray-500 mt-1">
                 Oczekiwane nagłówki: <code>Przód</code>, <code>Tył</code>.
@@ -545,7 +558,7 @@ export default function App() {
           {/* Tryb nauki */}
           <div className="bg-white rounded-2xl shadow p-4">
             <h2 className="font-semibold mb-3">Tryb nauki</h2>
-            <input className="w-full border rounded-xl px-3 py-2 mb-3" placeholder="Szukaj w fiszkach…" value={q} onChange={e => setQ(e.target.value)} />
+            <input className="w-full border rounded-xl px-3 h-10 mb-3" placeholder="Szukaj w fiszkach…" value={q} onChange={e => setQ(e.target.value)} />
             <Review />
           </div>
         </section>
@@ -568,7 +581,7 @@ export default function App() {
                       <input type="checkbox" checked={!!card.known} onChange={() => toggleKnown(card)} />
                       Zapamiętana
                     </label>
-                    <button onClick={() => removeCard(card.id)} className="px-3 py-2 rounded-xl bg-gray-100 hover:bg-gray-200">Usuń</button>
+                    <button onClick={() => removeCard(card.id)} className="px-3 py-2 h-10 rounded-xl bg-gray-100 hover:bg-gray-200">Usuń</button>
                   </div>
                 </motion.li>
               ))}
