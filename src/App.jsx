@@ -382,224 +382,247 @@ export default function App() {
   }, [cards, activeFolderId, showFilter, q])
 
   // ===== Tryb nauki — karta + Tryb auto (ciągła pętla)
-  function Review({ autoMode, onStopAuto, phaseA, phaseB, ttsFrontLang, ttsBackLang }) {
-    const has = filtered.length > 0
-    const safeLen = Math.max(1, filtered.length)
-    theCardCheck()
-    const card = filtered[reviewIdx % safeLen]
-    const [showBack, setShowBack] = useState(false)
+function Review({ autoMode, onStopAuto, phaseA, phaseB, ttsFrontLang, ttsBackLang }) {
+  const has = filtered.length > 0
+  const safeLen = Math.max(1, filtered.length)
+  const card = filtered[reviewIdx % safeLen]
+  const [showBack, setShowBack] = useState(false)
 
-    const timerA = useRef(null) // faza A
-    const timerB = useRef(null) // faza B
-    const utterRef = useRef(null)
+  const timerA = useRef(null) // faza A
+  const timerB = useRef(null) // faza B
+  const utterRef = useRef(null)
+  const nextBtnRef = useRef(null)
 
-    function theCardCheck() {
-      // nic — placeholder by uniknąć lintera przy inline definicji card
-    }
+  // Ustaw startową stronę przy każdej nowej karcie wg preferencji
+  useEffect(() => {
+    if (!has) return
+    if (sidePref === 'front') setShowBack(false)
+    else if (sidePref === 'back') setShowBack(true)
+    else setShowBack(Math.random() < 0.5)
+  }, [reviewIdx, sidePref, has])
 
-    // Ustaw startową stronę przy każdej nowej karcie wg preferencji
-    useEffect(() => {
-      if (!has) return
-      if (sidePref === 'front') setShowBack(false)
-      else if (sidePref === 'back') setShowBack(true)
-      else setShowBack(Math.random() < 0.5)
-    }, [reviewIdx, sidePref, has])
-
-    // Sprzątanie
-    useEffect(() => {
-      return () => {
-        if (timerA.current) clearTimeout(timerA.current)
-        if (timerB.current) clearTimeout(timerB.current)
-        if (utterRef.current) window.speechSynthesis.cancel()
-      }
-    }, [])
-
-    const speak = (text, isBack) => {
-      if (!text) return null
-      if (!('speechSynthesis' in window)) return null
-      const forced = isBack ? ttsBackLang : ttsFrontLang
-      const lang = forced !== 'auto' ? forced : detectLang(text)
-      const voice = pickVoice(voices, lang)
-      const u = new SpeechSynthesisUtterance(text)
-      u.lang = lang
-      if (voice) u.voice = voice
-      if (utterRef.current) window.speechSynthesis.cancel()
-      utterRef.current = u
-      window.speechSynthesis.speak(u)
-      return u
-    }
-
-    const stopTimersAndSpeech = () => {
+  // Sprzątanie
+  useEffect(() => {
+    return () => {
       if (timerA.current) clearTimeout(timerA.current)
       if (timerB.current) clearTimeout(timerB.current)
       timerA.current = null
       timerB.current = null
-      window.speechSynthesis?.cancel?.()
+      if ('speechSynthesis' in window) window.speechSynthesis.cancel()
+      utterRef.current = null
     }
+  }, [])
 
-    const gotoNextNow = () => {
-      stopTimersAndSpeech()
-      setReviewIdx(i => (i + 1) % filtered.length)
-    }
+  // TTS helpers
+  const speak = (text, isBack) => {
+    if (!text || !('speechSynthesis' in window)) return null
+    const forced = isBack ? ttsBackLang : ttsFrontLang
+    const lang = forced !== 'auto' ? forced : detectLang(text)
+    const voice = pickVoice(voices, lang)
+    const u = new SpeechSynthesisUtterance(text)
+    u.lang = lang
+    if (voice) u.voice = voice
+    if (utterRef.current) window.speechSynthesis.cancel()
+    utterRef.current = u
+    window.speechSynthesis.speak(u)
+    return u
+  }
 
-    // LOGIKA TRYBU AUTO — CIĄGŁA PĘTLA
-    useEffect(() => {
-      if (!autoMode || !has) return
+  const stopTimersAndSpeech = () => {
+    if (timerA.current) clearTimeout(timerA.current)
+    if (timerB.current) clearTimeout(timerB.current)
+    timerA.current = null
+    timerB.current = null
+    window.speechSynthesis?.cancel?.()
+    utterRef.current = null
+  }
 
-      stopTimersAndSpeech()
+  const gotoNextNow = () => {
+    stopTimersAndSpeech()
+    setReviewIdx(i => (i + 1) % filtered.length)
+  }
 
-      // FAZA A — pierwsza strona
-      const isBackA = showBack
-      const textA = isBackA ? card.back : card.front
-      speak(textA, isBackA)
+  // === LOGIKA TRYBU AUTO: czytaj widoczne → czekaj A → flip+czytaj → czekaj B → kliknij "Następna"
+  useEffect(() => {
+    if (!autoMode || !has) return
 
-      timerA.current = setTimeout(() => {
-        // FAZA B — flip + druga strona
-        const newShowBack = !showBack
-        setShowBack(newShowBack)
-        const isBackB = newShowBack
-        const textB = isBackB ? card.back : card.front
-        speak(textB, isBackB)
+    stopTimersAndSpeech()
 
-        timerB.current = setTimeout(() => {
-          // następna karta — i cykl od nowa
-          setReviewIdx(i => (i + 1) % filtered.length)
-        }, Math.max(1, phaseB) * 1000)
-      }, Math.max(1, phaseA) * 1000)
+    // FAZA A — czytamy to, co widać
+    const isBackA = showBack
+    const textA = isBackA ? card.back : card.front
+    speak(textA, isBackA)
 
-      return () => stopTimersAndSpeech()
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [autoMode, reviewIdx, filtered, showBack, phaseA, phaseB, ttsFrontLang, ttsBackLang])
+    timerA.current = setTimeout(() => {
+      // FLIP + FAZA B — czytamy odwrotną stronę
+      const flipped = !showBack
+      setShowBack(flipped)
+      const isBackB = flipped
+      const textB = isBackB ? card.back : card.front
+      speak(textB, isBackB)
 
-    if (!has) return <p className="text-sm text-gray-500">Brak fiszek do przeglądu.</p>
+      timerB.current = setTimeout(() => {
+        // Klikamy programowo "Następna"
+        if (nextBtnRef.current) {
+          nextBtnRef.current.click()
+        } else {
+          // awaryjnie przejdź dalej
+          gotoNextNow()
+        }
+      }, Math.max(1, phaseB) * 1000)
+    }, Math.max(1, phaseA) * 1000)
 
-    const containerClasses =
-      `w-full rounded-2xl shadow p-6 min-h-[160px] flex items-center justify-center text-center border 
-       ${showBack ? 'bg-sky-50 border-sky-200' : 'bg-emerald-50 border-emerald-200'}`
+    return () => stopTimersAndSpeech()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoMode, reviewIdx, filtered, showBack, phaseA, phaseB, ttsFrontLang, ttsBackLang])
 
-    const badgeClasses =
-      `absolute top-3 right-3 text-xs px-2 py-1 rounded-full border 
-       ${showBack ? 'bg-sky-100 border-sky-200 text-sky-800' : 'bg-emerald-100 border-emerald-200 text-emerald-800'}`
+  if (!has) return <p className="text-sm text-gray-500">Brak fiszek do przeglądu.</p>
 
-    const speakVisible = () => {
-      const isBackSide = showBack
-      const text = isBackSide ? card.back : card.front
-      speak(text, isBackSide)
-    }
+  const containerClasses =
+    `w-full rounded-2xl shadow p-6 min-h-[160px] flex items-center justify-center text-center border 
+     ${showBack ? 'bg-sky-50 border-sky-200' : 'bg-emerald-50 border-emerald-200'}`
 
-    return (
-      <div className="mt-6">
-        <div
-          className={`${containerClasses} relative cursor-pointer`}
-          onClick={() => setShowBack(s => !s)}
-          title="Kliknij, aby przełączyć front/back"
+  const badgeClasses =
+    `absolute top-3 right-3 text-xs px-2 py-1 rounded-full border 
+     ${showBack ? 'bg-sky-100 border-sky-200 text-sky-800' : 'bg-emerald-100 border-emerald-200 text-emerald-800'}`
+
+  const speakVisible = () => {
+    const isBackSide = showBack
+    const text = isBackSide ? card.back : card.front
+    speak(text, isBackSide)
+  }
+
+  return (
+    <div className="mt-6">
+      <div
+        className={`${containerClasses} relative cursor-pointer`}
+        onClick={() => setShowBack(s => !s)}
+        title="Kliknij, aby przełączyć front/back"
+      >
+        <span className={badgeClasses}>{showBack ? 'Tył' : 'Przód'}</span>
+        <div className="text-xl leading-relaxed max-w-[95%]">
+          {showBack ? card.back : card.front}
+        </div>
+      </div>
+
+      <div className="flex flex-wrap gap-2 mt-4 items-center">
+        <button
+          ref={nextBtnRef}
+          className="px-3 py-2 rounded-xl bg-gray-100 hover:bg-gray-200"
+          onClick={gotoNextNow}
+          title="Przerwij i przejdź do następnej"
         >
-          <span className={badgeClasses}>{showBack ? 'Tył' : 'Przód'}</span>
-          <div className="text-xl leading-relaxed max-w-[95%]">
-            {showBack ? card.back : card.front}
-          </div>
+          Następna
+        </button>
+        <button
+          className="px-3 py-2 rounded-xl bg-gray-100 hover:bg-gray-200"
+          onClick={() => setShowBack(s => !s)}
+        >
+          Pokaż
+        </button>
+        <button
+          className="px-3 py-2 rounded-xl bg-gray-100 hover:bg-gray-200"
+          onClick={speakVisible}
+          title="Przeczytaj aktualnie widoczną stronę"
+        >
+          Czytaj
+        </button>
+
+        {/* Języki TTS dla przodu/tyłu */}
+        <div className="flex items-center gap-2 bg-white rounded-xl border px-3 py-2">
+          <span className="text-sm">Język (Przód):</span>
+          <select
+            className="border rounded-lg px-2 py-1 h-9"
+            value={ttsFrontLang}
+            onChange={(e)=>setTtsFrontLang(e.target.value)}
+            title="Wymuś język czytania dla przodu"
+          >
+            <option value="auto">Auto</option>
+            <option value="pl-PL">Polski (pl-PL)</option>
+            <option value="en-US">English (en-US)</option>
+            <option value="de-DE">Deutsch (de-DE)</option>
+            <option value="es-ES">Español (es-ES)</option>
+            <option value="fr-FR">Français (fr-FR)</option>
+            <option value="it-IT">Italiano (it-IT)</option>
+            <option value="pt-PT">Português (pt-PT)</option>
+            <option value="tr-TR">Türkçe (tr-TR)</option>
+          </select>
         </div>
 
-        <div className="flex flex-wrap gap-2 mt-4 items-center">
-          <button
-            className="px-3 py-2 rounded-xl bg-gray-100 hover:bg-gray-200"
-            onClick={gotoNextNow}
-            title="Przerwij i przejdź do następnej"
+        <div className="flex items-center gap-2 bg-white rounded-xl border px-3 py-2">
+          <span className="text-sm">Język (Tył):</span>
+          <select
+            className="border rounded-lg px-2 py-1 h-9"
+            value={ttsBackLang}
+            onChange={(e)=>setTtsBackLang(e.target.value)}
+            title="Wymuś język czytania dla tyłu"
           >
-            Następna
-          </button>
-          <button
-            className="px-3 py-2 rounded-xl bg-gray-100 hover:bg-gray-200"
-            onClick={() => setShowBack(s => !s)}
-          >
-            Pokaż
-          </button>
-          <button
-            className="px-3 py-2 rounded-xl bg-gray-100 hover:bg-gray-200"
-            onClick={speakVisible}
-            title="Przeczytaj aktualnie widoczną stronę"
-          >
-            Czytaj
-          </button>
-
-          {/* Języki TTS dla przodu/tyłu */}
-          <div className="flex items-center gap-2 bg-white rounded-xl border px-3 py-2">
-            <span className="text-sm">Język (Przód):</span>
-            <select
-              className="border rounded-lg px-2 py-1 h-9"
-              value={ttsFrontLang}
-              onChange={(e)=>setTtsFrontLang(e.target.value)}
-              title="Wymuś język czytania dla przodu"
-            >
-              <option value="auto">Auto</option>
-              <option value="pl-PL">Polski (pl-PL)</option>
-              <option value="en-US">English (en-US)</option>
-              <option value="de-DE">Deutsch (de-DE)</option>
-              <option value="es-ES">Español (es-ES)</option>
-              <option value="fr-FR">Français (fr-FR)</option>
-              <option value="it-IT">Italiano (it-IT)</option>
-              <option value="pt-PT">Português (pt-PT)</option>
-              <option value="tr-TR">Türkçe (tr-TR)</option>
-            </select>
-          </div>
-
-          <div className="flex items-center gap-2 bg-white rounded-xl border px-3 py-2">
-            <span className="text-sm">Język (Tył):</span>
-            <select
-              className="border rounded-lg px-2 py-1 h-9"
-              value={ttsBackLang}
-              onChange={(e)=>setTtsBackLang(e.target.value)}
-              title="Wymuś język czytania dla tyłu"
-            >
-              <option value="auto">Auto</option>
-              <option value="pl-PL">Polski (pl-PL)</option>
-              <option value="en-US">English (en-US)</option>
-              <option value="de-DE">Deutsch (de-DE)</option>
-              <option value="es-ES">Español (es-ES)</option>
-              <option value="fr-FR">Français (fr-FR)</option>
-              <option value="it-IT">Italiano (it-IT)</option>
-              <option value="pt-PT">Português (pt-PT)</option>
-              <option value="tr-TR">Türkçe (tr-TR)</option>
-            </select>
-          </div>
-
-          <button
-            className={`px-3 py-2 rounded-xl ${autoMode ? 'bg-amber-600 text-white hover:bg-amber-500' : 'bg-amber-100 hover:bg-amber-200 text-amber-900'}`}
-            onClick={() => {
-              window.speechSynthesis?.cancel?.()
-              setAutoMode(v => !v)
-            }}
-            title="Automatyczne pokazywanie, czytanie i przechodzenie dalej (ciągła pętla)"
-          >
-            {autoMode ? 'Stop (Tryb auto)' : 'Tryb auto'}
-          </button>
-
-          <button
-            className="px-3 py-2 rounded-xl bg-emerald-600 text-white disabled:opacity-50"
-            onClick={() => markKnown(card)}
-            disabled={!!card.known}
-            title={card.known ? 'Już zapamiętana' : 'Oznacz tę fiszkę jako zapamiętaną'}
-          >
-            Zapamiętana
-          </button>
+            <option value="auto">Auto</option>
+            <option value="pl-PL">Polski (pl-PL)</option>
+            <option value="en-US">English (en-US)</option>
+            <option value="de-DE">Deutsch (de-DE)</option>
+            <option value="es-ES">Español (es-ES)</option>
+            <option value="fr-FR">Français (fr-FR)</option>
+            <option value="it-IT">Italiano (it-IT)</option>
+            <option value="pt-PT">Português (pt-PT)</option>
+            <option value="tr-TR">Türkçe (tr-TR)</option>
+          </select>
         </div>
 
-        {/* Suwaki czasu */}
-        <div className="mt-4 grid sm:grid-cols-2 gap-4 bg-white/60 rounded-xl p-3 border">
-          <div>
-            <label className="text-sm font-medium">Faza 1 — pierwsza strona (sekundy)</label>
-            <input
-              type="range"
-              min={3}
-              max={15}
-              step={1}
-              value={phaseA}
-              onChange={(e)=>{ setAutoMode(false); setPhaseA(Number(e.target.value)) }}
-              className="w-full"
-            />
-            <div className="text-xs text-gray-600 mt-1">Aktualnie: {phaseA}s</div>
-          </div>
-          <div>
+        <button
+          className={`px-3 py-2 rounded-xl ${autoMode ? 'bg-amber-600 text-white hover:bg-amber-500' : 'bg-amber-100 hover:bg-amber-200 text-amber-900'}`}
+          onClick={() => {
+            window.speechSynthesis?.cancel?.()
+            setAutoMode(v => !v)
+          }}
+          title="Automatyczne pokazywanie, czytanie i przechodzenie dalej (ciągła pętla)"
+        >
+          {autoMode ? 'Stop (Tryb auto)' : 'Tryb auto'}
+        </button>
+
+        <button
+          className="px-3 py-2 rounded-xl bg-emerald-600 text-white disabled:opacity-50"
+          onClick={() => markKnown(card)}
+          disabled={!!card.known}
+          title={card.known ? 'Już zapamiętana' : 'Oznacz tę fiszkę jako zapamiętaną'}
+        >
+          Zapamiętana
+        </button>
+      </div>
+
+      {/* Suwaki czasu */}
+      <div className="mt-4 grid sm:grid-cols-2 gap-4 bg-white/60 rounded-xl p-3 border">
+        <div>
+          <label className="text-sm font-medium">Faza 1 — pierwsza strona (sekundy)</label>
+          <input
+            type="range"
+            min={3}
+            max={15}
+            step={1}
+            value={phaseA}
+            onChange={(e)=>{ setAutoMode(false); setPhaseA(Number(e.target.value)) }}
+            className="w-full"
+          />
+          <div className="text-xs text-gray-600 mt-1">Aktualnie: {phaseA}s</div>
+        </div>
+        <div>
+          <label className="text-sm font-medium">Faza 2 — druga strona (sekundy)</label>
+          <input
+            type="range"
+            min={1}
+            max={10}
+            step={1}
+            value={phaseB}
+            onChange={(e)=>{ setAutoMode(false); setPhaseB(Number(e.target.value)) }}
+            className="w-full"
+          />
+          <div className="text-xs text-gray-600 mt-1">Aktualnie: {phaseB}s</div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
             <label className="text-sm font-medium">Faza 2 — druga strona (sekundy)</label>
             <input
               type="range"
