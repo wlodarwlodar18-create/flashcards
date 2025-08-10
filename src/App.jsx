@@ -124,6 +124,21 @@ export default function App() {
     fetchFolders()
   }
 
+  async function deleteFolder(id, name) {
+    if (!window.confirm(`Usunąć folder „${name}”? Fiszki z tego folderu nie znikną – ich folder zostanie wyczyszczony.`)) return
+    const { error } = await supabase
+      .from('folders')
+      .delete()
+      .eq('id', id)
+      .eq('user_id', session.user.id)
+    if (error) { setError(error.message); return }
+    // zaktualizuj stan lokalny
+    setFolders(prev => prev.filter(f => f.id !== id))
+    if (activeFolderId === id) setActiveFolderId('ALL')
+    // odśwież fiszki (po ON DELETE SET NULL)
+    fetchCards()
+  }
+
   async function addCard(front, back, folderId) {
     const payload = { id: uuidv4(), user_id: session.user.id, front, back, folder_id: folderId || null }
     const { error } = await supabase.from('flashcards').insert(payload)
@@ -406,17 +421,31 @@ export default function App() {
           </div>
         </header>
 
-        {/* Foldery: dodawanie + lista */}
+        {/* Foldery: dodawanie + lista (z usuwaniem) */}
         <section className="mt-6 bg-white rounded-2xl shadow p-4">
           <h2 className="font-semibold mb-3">Foldery</h2>
           <form onSubmit={addFolder} className="flex gap-2">
             <input className="flex-1 border rounded-xl px-3 py-2" placeholder="Nazwa folderu (np. Angielski B1)" value={newFolderName} onChange={e=>setNewFolderName(e.target.value)} />
             <button className="px-4 py-2 rounded-xl bg-black text-white">Dodaj folder</button>
           </form>
-          <ul className="mt-3 flex flex-wrap gap-2 text-sm">
+
+          <ul className="mt-3 grid sm:grid-cols-2 lg:grid-cols-3 gap-2 text-sm">
             {folders.map(f => (
-              <li key={f.id} className={`px-3 py-1 rounded-full border ${activeFolderId===f.id?'bg-black text-white':'bg-gray-50'}`}>
-                {f.name}
+              <li key={f.id} className={`flex items-center justify-between px-3 py-2 rounded-xl border ${activeFolderId===f.id?'bg-black text-white':'bg-gray-50'}`}>
+                <button
+                  className="text-left truncate flex-1"
+                  title="Pokaż tylko ten folder"
+                  onClick={() => setActiveFolderId(f.id)}
+                >
+                  {f.name}
+                </button>
+                <button
+                  className={`ml-2 px-2 py-1 rounded-lg border ${activeFolderId===f.id ? 'bg-white/10' : 'hover:bg-white'}`}
+                  onClick={() => deleteFolder(f.id, f.name)}
+                  title="Usuń folder"
+                >
+                  Usuń
+                </button>
               </li>
             ))}
           </ul>
