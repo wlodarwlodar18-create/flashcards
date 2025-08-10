@@ -46,19 +46,25 @@ function detectLang(text) {
   if (/[ãõçáéíóú]/i.test(raw)) return 'pt-PT'
   if (/[ğüşıçöİ]/i.test(raw)) return 'tr-TR'
 
-  // Heurystyka PL bez ogonków
+  // Heurystyka PL bez ogonków (mocniejsza)
   const s = stripDiacritics(raw).toLowerCase()
   const plStop = new Set([
-    'i','w','na','do','nie','tak','jest','sa','byc','mam','masz','moze','mozesz','ktory','ktora','ktore',
+    'i','w','na','do','nie','tak','jest','sa','byc','mam','masz','moze','mozna','ktory','ktora','ktore',
     'zeby','albo','czy','dlaczego','poniewaz','przez','ten','ta','to','te','tam','tutaj','taki','takie',
-    'bardziej','mniej','bardzo','troche','jesli','gdy','kiedy','z','za','po','od','bez','dla','przed'
+    'bardziej','mniej','bardzo','troche','jesli','gdy','kiedy','z','za','po','od','bez','dla','przed',
+    'tojest','jak','co','kto','gdzie','kiedy','dlaczego'
   ])
   const tokens = s.split(/[^a-zA-Z]+/).filter(Boolean)
   let plHits = 0
   for (const t of tokens) if (plStop.has(t)) plHits++
-  const digraphs = (s.match(/rz|sz|cz|dz|dzw|dzdz|ch|nia|owie|ami|ego|emu|ach|cie|osci|alny|owy/gi) || []).length
-  if (plHits >= 2 || digraphs >= 2) return 'pl-PL'
 
+  // typowe dwuznaki i końcówki fleksyjne
+  const digraphs = (s.match(/rz|sz|cz|dz|dzw|ch|nia|owie|ami|ego|emu|ach|cie|osci|alny|owy|owym|owie|ami|ami|cie|scy|liscie/gi) || []).length
+
+  // dodatkowe sygnały: 'szcz', zakończenia -ować, -anie, -enie, -owy
+  const endings = (s.match(/owac|anie|enie|owy|ami|owej|owego|nych|nymi|emu|cie|ciez|szcz/gi) || []).length
+
+  if (plHits >= 2 || digraphs >= 2 || endings >= 1) return 'pl-PL'
   return 'en-US'
 }
 
@@ -83,6 +89,9 @@ export default function App() {
   const [sidePref, setSidePref] = useState('front')       // 'front' | 'back' | 'random'
   const [shuffleOnLoad, setShuffleOnLoad] = useState(true)
   const [firstLoad, setFirstLoad] = useState(true)
+
+  // TTS override (Auto domyślnie)
+  const [ttsLang, setTtsLang] = useState('auto') // 'auto' | 'pl-PL' | 'en-US' | ...
 
   // dane
   const [cards, setCards] = useState([])
@@ -130,23 +139,26 @@ export default function App() {
       supabase.auth.onAuthStateChange((_e, s) => setSession(s))
     }
     try {
+      const ls = (k, d) => localStorage.getItem(k) ?? d
       const storedSide = localStorage.getItem('sidePref')
       const storedFilter = localStorage.getItem('showFilter')
       const storedShuffle = localStorage.getItem('shuffleOnLoad')
       const storedA = localStorage.getItem('phaseA')
       const storedB = localStorage.getItem('phaseB')
+      const storedTts = localStorage.getItem('ttsLang')
       if (storedSide) setSidePref(storedSide)
       if (storedFilter) setShowFilter(storedFilter)
       if (storedShuffle !== null) setShuffleOnLoad(storedShuffle === 'true')
       if (storedA) setPhaseA(Math.min(15, Math.max(3, Number(storedA) || 7)))
       if (storedB) setPhaseB(Math.min(10, Math.max(1, Number(storedB) || 3)))
+      setTtsLang(storedTts || 'auto')
     } catch {}
     init()
   }, [])
 
   useEffect(() => {
     if (!session) return
-    fetchFolders().then(() => fetchCards()) // najpierw foldery, potem fiszki
+    fetchFolders().then(() => fetchCards())
   }, [session])
 
   useEffect(() => {
@@ -156,8 +168,9 @@ export default function App() {
       localStorage.setItem('shuffleOnLoad', String(shuffleOnLoad))
       localStorage.setItem('phaseA', String(phaseA))
       localStorage.setItem('phaseB', String(phaseB))
+      localStorage.setItem('ttsLang', ttsLang)
     } catch {}
-  }, [sidePref, showFilter, shuffleOnLoad, phaseA, phaseB])
+  }, [sidePref, showFilter, shuffleOnLoad, phaseA, phaseB, ttsLang])
 
   // ===== API
   async function fetchFolders() {
@@ -381,8 +394,6 @@ export default function App() {
     // timery i mowa
     const timerA = useRef(null) // faza A
     const timerB = useRef(null) // faza B
-    const startedAtIdxRef = useRef(null)
-    const leftRef = useRef(0)
     const utterRef = useRef(null)
 
     // startowa strona wg preferencji przy każdej karcie
@@ -405,7 +416,7 @@ export default function App() {
     const speak = (text) => {
       if (!text) return null
       if (!('speechSynthesis' in window)) return null
-      const lang = detectLang(text)
+      const lang = ttsLang !== 'auto' ? ttsLang : detectLang(text)
       const voice = pickVoice(voices, lang)
       const u = new SpeechSynthesisUtterance(text)
       u.lang = lang
@@ -416,59 +427,41 @@ export default function App() {
       return u
     }
 
-    // LOGIKA TRYBU AUTO:
-    // - faza A (phaseA s): pokazuje aktualną stronę i ją czyta
-    // - faza B (phaseB s): flip, pokazuje drugą stronę i ją czyta
-    // - przejście do następnej; po jednym okrążeniu koniec trybu
+    // LOGIKA TRYBU AUTO — CIĄGŁA PĘTLA:
+    // - faza A (phaseA s): czytaj aktualną stronę
+    // - faza B (phaseB s): flip, czytaj drugą stronę
+    // - automatycznie przejdź do następnej i znów uruchom A→B, w kółko aż do Stop
     useEffect(() => {
       if (!autoMode || !has) return
 
-      if (startedAtIdxRef.current == null) {
-        startedAtIdxRef.current = reviewIdx % filtered.length
-        leftRef.current = filtered.length
-      }
-
-      // wyczyść stare timery
+      // czyść stare timery
       if (timerA.current) clearTimeout(timerA.current)
       if (timerB.current) clearTimeout(timerB.current)
 
-      // FAZA A — phaseA s: czytaj aktualnie widoczną stronę
+      // FAZA A — pierwsza strona
       const textA = showBack ? card.back : card.front
       speak(textA)
 
       timerA.current = setTimeout(() => {
-        // FAZA B — flip + phaseB s: czytaj drugą stronę
+        // FAZA B — flip + druga strona
         const newShowBack = !showBack
         setShowBack(newShowBack)
-
         const textB = newShowBack ? card.back : card.front
         speak(textB)
 
         timerB.current = setTimeout(() => {
-          // przejście do następnej
-          leftRef.current = Math.max(0, leftRef.current - 1)
-          const nextIdx = (reviewIdx + 1) % filtered.length
-          setReviewIdx(nextIdx)
-
-          // zakończenie po jednym okrążeniu
-          if (leftRef.current === 0 || nextIdx === startedAtIdxRef.current) {
-            onStopAuto?.()
-            if (timerA.current) clearTimeout(timerA.current)
-            if (timerB.current) clearTimeout(timerB.current)
-            timerA.current = null
-            timerB.current = null
-            startedAtIdxRef.current = null
-            leftRef.current = 0
-          }
-        }, Math.max(1, phaseB) * 1000) // faza B
-      }, Math.max(1, phaseA) * 1000) // faza A
+          // przejście do następnej (ciągła pętla)
+          setReviewIdx(i => (i + 1) % filtered.length)
+          // efekt odpali się ponownie, bo zależy od reviewIdx/autoMode
+        }, Math.max(1, phaseB) * 1000)
+      }, Math.max(1, phaseA) * 1000)
 
       return () => {
         if (timerA.current) clearTimeout(timerA.current)
         if (timerB.current) clearTimeout(timerB.current)
       }
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [autoMode, reviewIdx, filtered, showBack, phaseA, phaseB])
+    }, [autoMode, reviewIdx, filtered, showBack, phaseA, phaseB, ttsLang])
 
     if (!has) return <p className="text-sm text-gray-500">Brak fiszek do przeglądu.</p>
 
@@ -498,7 +491,7 @@ export default function App() {
           </div>
         </div>
 
-        <div className="flex flex-wrap gap-2 mt-4">
+        <div className="flex flex-wrap gap-2 mt-4 items-center">
           <button
             className="px-3 py-2 rounded-xl bg-gray-100 hover:bg-gray-200"
             onClick={() => setReviewIdx(i => (i + 1) % filtered.length)}
@@ -518,16 +511,39 @@ export default function App() {
           >
             Czytaj
           </button>
+
+          {/* Język czytania */}
+          <div className="flex items-center gap-2 bg-white rounded-xl border px-3 py-2">
+            <span className="text-sm">Język:</span>
+            <select
+              className="border rounded-lg px-2 py-1 h-9"
+              value={ttsLang}
+              onChange={(e)=>setTtsLang(e.target.value)}
+              title="Wymuś język syntezatora mowy"
+            >
+              <option value="auto">Auto</option>
+              <option value="pl-PL">Polski (pl-PL)</option>
+              <option value="en-US">English (en-US)</option>
+              <option value="de-DE">Deutsch (de-DE)</option>
+              <option value="es-ES">Español (es-ES)</option>
+              <option value="fr-FR">Français (fr-FR)</option>
+              <option value="it-IT">Italiano (it-IT)</option>
+              <option value="pt-PT">Português (pt-PT)</option>
+              <option value="tr-TR">Türkçe (tr-TR)</option>
+            </select>
+          </div>
+
           <button
             className={`px-3 py-2 rounded-xl ${autoMode ? 'bg-amber-600 text-white hover:bg-amber-500' : 'bg-amber-100 hover:bg-amber-200 text-amber-900'}`}
             onClick={() => {
               window.speechSynthesis?.cancel?.()
               setAutoMode(v => !v)
             }}
-            title="Automatyczne pokazywanie, czytanie i przechodzenie dalej"
+            title="Automatyczne pokazywanie, czytanie i przechodzenie dalej (ciągła pętla)"
           >
             {autoMode ? 'Stop (Tryb auto)' : 'Tryb auto'}
           </button>
+
           <button
             className="px-3 py-2 rounded-xl bg-emerald-600 text-white disabled:opacity-50"
             onClick={() => markKnown(card)}
@@ -548,7 +564,7 @@ export default function App() {
               max={15}
               step={1}
               value={phaseA}
-              onChange={(e)=>{ onStopAuto?.(); setPhaseA(Number(e.target.value)) }}
+              onChange={(e)=>{ setAutoMode(false); setPhaseA(Number(e.target.value)) }}
               className="w-full"
             />
             <div className="text-xs text-gray-600 mt-1">Aktualnie: {phaseA}s</div>
@@ -561,7 +577,7 @@ export default function App() {
               max={10}
               step={1}
               value={phaseB}
-              onChange={(e)=>{ onStopAuto?.(); setPhaseB(Number(e.target.value)) }}
+              onChange={(e)=>{ setAutoMode(false); setPhaseB(Number(e.target.value)) }}
               className="w-full"
             />
             <div className="text-xs text-gray-600 mt-1">Aktualnie: {phaseB}s</div>
@@ -578,7 +594,7 @@ export default function App() {
           <h1 className="text-2xl font-bold">Fiszki – logowanie</h1>
           <p className="text-sm text-gray-600 mt-2">Podaj e-mail (magic link) albo zaloguj hasłem właściciela.</p>
 
-        {/* Magic link */}
+          {/* Magic link */}
           <form onSubmit={signInWithEmail} className="mt-4 space-y-3">
             <input type="email" required placeholder="twoj@email.pl" value={email} onChange={(e) => setEmail(e.target.value)} className="w-full border rounded-xl px-3 py-2 h-10" />
             <button disabled={loading} className="w-full rounded-xl px-4 h-10 bg-black text-white disabled:opacity-50">
