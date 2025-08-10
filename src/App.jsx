@@ -18,6 +18,40 @@ function shuffle(arr) {
   return a
 }
 
+/* Heurystyczne wykrywanie języka na podstawie znaków */
+function detectLang(text) {
+  const s = (text || '').trim()
+  if (!s) return 'en-US'
+  // Skrypty
+  if (/[\u0400-\u04FF]/.test(s)) return 'ru-RU'          // cyrylica (ros/ukr/...)
+  if (/[\u0600-\u06FF]/.test(s)) return 'ar-SA'          // arabski
+  if (/[\u4E00-\u9FFF]/.test(s)) return 'zh-CN'          // han (zh)
+  if (/[\u3040-\u30FF]/.test(s)) return 'ja-JP'          // japoński
+  if (/[\uAC00-\uD7AF]/.test(s)) return 'ko-KR'          // koreański
+  // Diakrytyki łacińskie
+  if (/[ąćęłńóśźż]/i.test(s)) return 'pl-PL'
+  if (/[äöüß]/i.test(s)) return 'de-DE'
+  if (/[ñáéíóúü]/i.test(s)) return 'es-ES'
+  if (/[çâêëïîôûùéèà]/i.test(s)) return 'fr-FR'
+  if (/[àèéìòù]/i.test(s)) return 'it-IT'
+  if (/[ãõçáéíóú]/i.test(s)) return 'pt-PT'
+  if (/[ğüşıçöİ]/i.test(s)) return 'tr-TR'
+  // Domyślnie angielski
+  return 'en-US'
+}
+
+/* Wybór głosu pasującego do języka */
+function pickVoice(voices, lang) {
+  if (!voices || !voices.length) return null
+  // Najpierw pełne dopasowanie (np. "pl-PL")
+  const exact = voices.find(v => v.lang.toLowerCase() === lang.toLowerCase())
+  if (exact) return exact
+  // Potem prefiks (np. "pl")
+  const pref = voices.find(v => v.lang.toLowerCase().startsWith(lang.split('-')[0].toLowerCase()))
+  if (pref) return pref
+  return voices[0] // cokolwiek
+}
+
 export default function App() {
   const [session, setSession] = useState(null)
   const [email, setEmail] = useState('')
@@ -52,6 +86,16 @@ export default function App() {
   const [ownerPassword, setOwnerPassword] = useState('')
 
   const [reviewIdx, setReviewIdx] = useState(0)
+
+  // Voices (Web Speech API)
+  const [voices, setVoices] = useState([])
+  useEffect(() => {
+    if (!('speechSynthesis' in window)) return
+    const load = () => setVoices(window.speechSynthesis.getVoices())
+    load()
+    window.speechSynthesis.onvoiceschanged = load
+    return () => { window.speechSynthesis.onvoiceschanged = null }
+  }, [])
 
   // init
   useEffect(() => {
@@ -310,7 +354,7 @@ export default function App() {
     return arr
   }, [cards, activeFolderId, showFilter, q])
 
-  // ===== Tryb nauki — bez animacji, pastelowe kolory
+  // ===== Tryb nauki — bez animacji, pastelowe kolory + CZYTANIE
   function Review() {
     const has = filtered.length > 0
     const safeLen = Math.max(1, filtered.length)
@@ -334,6 +378,23 @@ export default function App() {
     const badgeClasses =
       `absolute top-3 right-3 text-xs px-2 py-1 rounded-full border 
        ${showBack ? 'bg-sky-100 border-sky-200 text-sky-800' : 'bg-emerald-100 border-emerald-200 text-emerald-800'}`
+
+    // Czytanie aktualnie widocznej strony
+    const speakVisible = () => {
+      const text = showBack ? card.back : card.front
+      if (!text) return
+      if (!('speechSynthesis' in window)) {
+        alert('Twoja przeglądarka nie obsługuje odczytu głosowego (SpeechSynthesis).')
+        return
+      }
+      const lang = detectLang(text)
+      const voice = pickVoice(voices, lang)
+      const u = new SpeechSynthesisUtterance(text)
+      u.lang = lang
+      if (voice) u.voice = voice
+      window.speechSynthesis.cancel()
+      window.speechSynthesis.speak(u)
+    }
 
     return (
       <div className="mt-6">
@@ -361,6 +422,13 @@ export default function App() {
             onClick={() => setShowBack(s => !s)}
           >
             Pokaż
+          </button>
+          <button
+            className="px-3 py-2 rounded-xl bg-gray-100 hover:bg-gray-200"
+            onClick={speakVisible}
+            title="Wykryj język przodu/tyłu i przeczytaj"
+          >
+            Czytaj
           </button>
           <button
             className="px-3 py-2 rounded-xl bg-emerald-600 text-white disabled:opacity-50"
