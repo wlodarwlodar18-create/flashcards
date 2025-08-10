@@ -124,20 +124,20 @@ export default function App() {
     fetchFolders()
   }
 
-  async function deleteFolder(id, name) {
-    if (!window.confirm(`Usunąć folder „${name}”? Fiszki z tego folderu nie znikną – ich folder zostanie wyczyszczony.`)) return
-    const { error } = await supabase
-      .from('folders')
-      .delete()
-      .eq('id', id)
-      .eq('user_id', session.user.id)
-    if (error) { setError(error.message); return }
-    // zaktualizuj stan lokalny
-    setFolders(prev => prev.filter(f => f.id !== id))
-    if (activeFolderId === id) setActiveFolderId('ALL')
-    // odśwież fiszki (po ON DELETE SET NULL)
+ async function deleteFolder(id, name) {
+  if (!window.confirm(`Usunąć folder „${name}”? Wszystkie fiszki z tego folderu również zostaną usunięte (kaskadowo).`)) return
+  const { error } = await supabase
+    .from('folders')
+    .delete()
+    .eq('id', id)
+    .eq('user_id', session.user.id)
+  if (error) setError(error.message)
+  else {
+    fetchFolders()
     fetchCards()
   }
+}
+
 
   async function addCard(front, back, folderId) {
     const payload = { id: uuidv4(), user_id: session.user.id, front, back, folder_id: folderId || null }
