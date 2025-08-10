@@ -337,13 +337,13 @@ export default function App() {
 
     return (
       <div className="mt-6">
-        {/* Karta — bez górnego paska */}
+        {/* Karta */}
         <div
           className={`${containerClasses} relative cursor-pointer`}
           onClick={() => setShowBack(s => !s)}
           title="Kliknij, aby przełączyć front/back"
         >
-          <span className={badgeClasses}>{showBack ? 'Back' : 'Front'}</span>
+          <span className={badgeClasses}>{showBack ? 'Tył' : 'Przód'}</span>
           <div className="text-xl leading-relaxed max-w-[95%]">
             {showBack ? card.back : card.front}
           </div>
@@ -382,7 +382,7 @@ export default function App() {
           <h1 className="text-2xl font-bold">Fiszki – logowanie</h1>
           <p className="text-sm text-gray-600 mt-2">Podaj e-mail (magic link) albo zaloguj hasłem właściciela.</p>
 
-          {/* Magic link */}
+        {/* Magic link */}
           <form onSubmit={signInWithEmail} className="mt-4 space-y-3">
             <input type="email" required placeholder="twoj@email.pl" value={email} onChange={(e) => setEmail(e.target.value)} className="w-full border rounded-xl px-3 py-2" />
             <button disabled={loading} className="w-full rounded-xl px-4 py-2 bg-black text-white disabled:opacity-50">
@@ -416,17 +416,17 @@ export default function App() {
             <div className="text-sm bg-white rounded-xl shadow px-3 py-2 flex items-center gap-2">
               <span>Pokaż:</span>
               <select className="border rounded-lg px-2 py-1" value={showFilter} onChange={(e)=>setShowFilter(e.target.value)}>
-                <option value="all">wszystkie</option>
-                <option value="unknown">nie-zapamiętane</option>
-                <option value="known">zapamiętane</option>
+                <option value="all">Wszystkie</option>
+                <option value="unknown">Niezapamiętane</option>
+                <option value="known">Zapamiętane</option>
               </select>
             </div>
             <div className="text-sm bg-white rounded-xl shadow px-3 py-2 flex items-center gap-2">
               <span>Najpierw:</span>
               <select className="border rounded-lg px-2 py-1" value={sidePref} onChange={(e)=>setSidePref(e.target.value)}>
-                <option value="front">front</option>
-                <option value="back">back</option>
-                <option value="random">losowo</option>
+                <option value="front">Przód</option>
+                <option value="back">Tył</option>
+                <option value="random">Losowo</option>
               </select>
             </div>
             <div className="text-sm bg-white rounded-xl shadow px-3 py-2 flex items-center gap-3">
@@ -531,7 +531,7 @@ export default function App() {
                 />
               </div>
               <p className="text-xs text-gray-500 mt-1">
-                Oczekiwane nagłówki: <code>Przód</code>, <code>Tył</code>. (Działają też: <code>front</code>, <code>back</code>).
+                Oczekiwane nagłówki: <code>Przód</code>, <code>Tył</code>.
               </p>
               {!importFolderId && (
                 <p className="text-xs text-red-600 mt-1">Wybór folderu jest wymagany, aby wczytać plik.</p>
