@@ -14,58 +14,76 @@ export default function App() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
-  // preferencje UI
-  const [hideKnown, setHideKnown] = useState(true)
+  // preferencje i filtry
+  const [showFilter, setShowFilter] = useState('unknown') // 'all' | 'known' | 'unknown'
   const [sidePref, setSidePref] = useState('front') // 'front' | 'back' | 'random'
 
   // dane
   const [cards, setCards] = useState([])
+  const [folders, setFolders] = useState([])
+  const [activeFolderId, setActiveFolderId] = useState('ALL') // filtr folderu
   const [q, setQ] = useState('')
+
+  // dodawanie fiszki
   const [newFront, setNewFront] = useState('')
   const [newBack, setNewBack] = useState('')
-  const [newFolder, setNewFolder] = useState('')
-  const [folderFilter, setFolderFilter] = useState('ALL')
-  const [reviewIdx, setReviewIdx] = useState(0)
+  const [newCardFolderId, setNewCardFolderId] = useState(null)
 
-  // owner-login (opcjonalnie, jeśli masz)
+  // dodawanie folderu
+  const [newFolderName, setNewFolderName] = useState('')
+
+  // owner-login (opcjonalnie)
   const [ownerEmail, setOwnerEmail] = useState('')
   const [ownerPassword, setOwnerPassword] = useState('')
 
-  // load session
+  const [reviewIdx, setReviewIdx] = useState(0)
+
+  // init
   useEffect(() => {
     const init = async () => {
       const { data: { session } } = await supabase.auth.getSession()
       setSession(session)
-      supabase.auth.onAuthStateChange((_event, session) => setSession(session))
+      supabase.auth.onAuthStateChange((_e, s) => setSession(s))
     }
-    // preferencje z localStorage
     try {
-      const storedHide = localStorage.getItem('hideKnown')
       const storedSide = localStorage.getItem('sidePref')
-      if (storedHide !== null) setHideKnown(storedHide === 'true')
+      const storedFilter = localStorage.getItem('showFilter')
       if (storedSide) setSidePref(storedSide)
+      if (storedFilter) setShowFilter(storedFilter)
     } catch {}
     init()
   }, [])
 
   useEffect(() => {
     if (!session) return
-    fetchCards()
+    fetchFolders().then(() => fetchCards()) // najpierw foldery, potem fiszki
   }, [session])
 
   useEffect(() => {
     try {
-      localStorage.setItem('hideKnown', String(hideKnown))
       localStorage.setItem('sidePref', sidePref)
+      localStorage.setItem('showFilter', showFilter)
     } catch {}
-  }, [hideKnown, sidePref])
+  }, [sidePref, showFilter])
+
+  // ===== API
+  async function fetchFolders() {
+    setError('')
+    const { data, error } = await supabase
+      .from('folders')
+      .select('id, name, created_at')
+      .eq('user_id', session.user.id)
+      .order('created_at', { ascending: false })
+    if (error) setError(error.message)
+    else setFolders(data || [])
+  }
 
   async function fetchCards() {
     setLoading(true)
     setError('')
     const { data, error } = await supabase
       .from('flashcards')
-      .select('id, front, back, folder, known, created_at')
+      .select('id, front, back, known, folder_id, created_at')
       .eq('user_id', session.user.id)
       .order('created_at', { ascending: false })
     if (error) setError(error.message)
@@ -73,53 +91,35 @@ export default function App() {
     setLoading(false)
   }
 
-  async function signInWithEmail(e) {
+  async function addFolder(e) {
     e.preventDefault()
-    setLoading(true)
-    setError('')
-    const { error } = await supabase.auth.signInWithOtp({
-      email,
-      options: { emailRedirectTo: window.location.origin }
-    })
-    setLoading(false)
-    if (error) setError(error.message)
-    else alert('Sprawdź skrzynkę – wysłałem link do logowania.')
+    if (!newFolderName.trim()) return
+    const payload = { id: uuidv4(), user_id: session.user.id, name: newFolderName.trim() }
+    const { error } = await supabase.from('folders').insert(payload)
+    if (error) { setError(error.message); return }
+    setNewFolderName('')
+    fetchFolders()
   }
 
-  // logowanie hasłem (jeśli dodałeś wcześniej)
-  async function signInWithPassword(e) {
-    e.preventDefault()
-    setLoading(true)
-    setError('')
-    const { error } = await supabase.auth.signInWithPassword({
-      email: ownerEmail,
-      password: ownerPassword
-    })
-    setLoading(false)
-    if (error) setError(error.message)
-  }
-
-  async function signOut() {
-    await supabase.auth.signOut()
-    setCards([])
-  }
-
-  async function addCard(front, back, folder) {
-    const payload = { id: uuidv4(), user_id: session.user.id, front, back, folder: folder || null }
+  async function addCard(front, back, folderId) {
+    const payload = {
+      id: uuidv4(),
+      user_id: session.user.id,
+      front, back,
+      folder_id: folderId || null
+    }
     const { error } = await supabase.from('flashcards').insert(payload)
     if (error) throw error
   }
 
-  async function handleAdd(e) {
+  async function handleAddCard(e) {
     e.preventDefault()
     if (!newFront.trim() || !newBack.trim()) return
     try {
-      await addCard(newFront.trim(), newBack.trim(), newFolder.trim())
-      setNewFront(''); setNewBack(''); setNewFolder('')
+      await addCard(newFront.trim(), newBack.trim(), newCardFolderId)
+      setNewFront(''); setNewBack(''); setNewCardFolderId(null)
       fetchCards()
-    } catch (err) {
-      setError(err.message)
-    }
+    } catch (err) { setError(err.message) }
   }
 
   async function removeCard(id) {
@@ -134,7 +134,6 @@ export default function App() {
 
   async function toggleKnown(card) {
     const next = !card.known
-    // optimistic update
     setCards(prev => prev.map(c => c.id === card.id ? { ...c, known: next } : c))
     const { error } = await supabase
       .from('flashcards')
@@ -143,9 +142,36 @@ export default function App() {
       .eq('user_id', session.user.id)
     if (error) {
       setError(error.message)
-      // rollback
       setCards(prev => prev.map(c => c.id === card.id ? { ...c, known: card.known } : c))
     }
+  }
+
+  async function signInWithEmail(e) {
+    e.preventDefault()
+    setLoading(true); setError('')
+    const { error } = await supabase.auth.signInWithOtp({
+      email,
+      options: { emailRedirectTo: window.location.origin }
+    })
+    setLoading(false)
+    if (error) setError(error.message)
+    else alert('Sprawdź skrzynkę – wysłałem link do logowania.')
+  }
+
+  async function signInWithPassword(e) {
+    e.preventDefault()
+    setLoading(true); setError('')
+    const { error } = await supabase.auth.signInWithPassword({
+      email: ownerEmail,
+      password: ownerPassword
+    })
+    setLoading(false)
+    if (error) setError(error.message)
+  }
+
+  async function signOut() {
+    await supabase.auth.signOut()
+    setCards([]); setFolders([])
   }
 
   function parseCSV(file) {
@@ -162,17 +188,37 @@ export default function App() {
   async function handleCSVUpload(e) {
     const file = e.target.files?.[0]
     if (!file) return
-    setLoading(true)
-    setError('')
+    setLoading(true); setError('')
     try {
-      const rows = await parseCSV(file) // expects columns: front, back, (opcjonalnie) folder, known
+      const rows = await parseCSV(file) // oczekuje: front, back, (opcjonalnie) folder_name, known
+      // mapowanie folder_name -> folder_id (tworzymy brakujące foldery)
+      const nameToId = new Map(folders.map(f => [f.name, f.id]))
+      const newFoldersToCreate = []
+      rows.forEach(r => {
+        const name = (r.folder_name || '').toString().trim()
+        if (name && !nameToId.has(name)) newFoldersToCreate.push(name)
+      })
+      if (newFoldersToCreate.length) {
+        const insert = newFoldersToCreate
+          .filter((v, i, a) => a.indexOf(v) === i)
+          .map(n => ({ id: uuidv4(), user_id: session.user.id, name: n }))
+        const { data: created, error } = await supabase.from('folders').insert(insert).select('id,name')
+        if (error) throw error
+        created.forEach(f => nameToId.set(f.name, f.id))
+        await fetchFolders()
+      }
+
       const cleaned = rows
-        .map(r => ({
-          front: (r.front || '').toString().trim(),
-          back: (r.back || '').toString().trim(),
-          folder: (r.folder || '').toString().trim() || null,
-          known: String(r.known || '').toLowerCase() === 'true'
-        }))
+        .map(r => {
+          const front = (r.front || '').toString().trim()
+          const back  = (r.back || '').toString().trim()
+          const fname = (r.folder_name || '').toString().trim()
+          const known = String(r.known || '').toLowerCase() === 'true'
+          return {
+            front, back, known,
+            folder_id: fname ? nameToId.get(fname) || null : null
+          }
+        })
         .filter(r => r.front && r.back)
 
       const payload = cleaned.map(r => ({ id: uuidv4(), user_id: session.user.id, ...r }))
@@ -187,46 +233,39 @@ export default function App() {
     } catch (err) {
       setError(err.message)
     } finally {
-      setLoading(false)
-      e.target.value = ''
+      setLoading(false); e.target.value = ''
     }
   }
 
-  // grupy/foldery do filtra
-  const folders = useMemo(() => {
-    const set = new Set()
-    cards.forEach(c => { if (c.folder && c.folder.trim()) set.add(c.folder.trim()) })
-    return Array.from(set).sort()
-  }, [cards])
+  // ===== Filtrowanie
+  const foldersForSelect = useMemo(() => [{ id: 'ALL', name: 'Wszystkie' }, ...folders], [folders])
 
-  // filtrowanie
   const filtered = useMemo(() => {
     let arr = cards
-    if (hideKnown) arr = arr.filter(c => !c.known)
-    if (folderFilter !== 'ALL') arr = arr.filter(c => (c.folder || '') === folderFilter)
+    if (activeFolderId !== 'ALL') arr = arr.filter(c => (c.folder_id || null) === activeFolderId)
+    if (showFilter === 'known') arr = arr.filter(c => c.known)
+    if (showFilter === 'unknown') arr = arr.filter(c => !c.known)
     const k = q.trim().toLowerCase()
-    if (!k) return arr
-    return arr.filter(c =>
-      c.front.toLowerCase().includes(k) ||
-      c.back.toLowerCase().includes(k) ||
-      (c.folder || '').toLowerCase().includes(k)
-    )
-  }, [q, cards, hideKnown, folderFilter])
+    if (k) {
+      arr = arr.filter(c => c.front.toLowerCase().includes(k) || c.back.toLowerCase().includes(k))
+    }
+    return arr
+  }, [cards, activeFolderId, showFilter, q])
 
+  // ===== Tryb nauki
   function Review() {
     const has = filtered.length > 0
-    const card = filtered[reviewIdx % Math.max(1, filtered.length)]
+    const safeLen = Math.max(1, filtered.length)
+    const card = filtered[reviewIdx % safeLen]
     const [showBack, setShowBack] = useState(false)
 
-    // ustal stronę startową wg preferencji
+    // ustaw startową stronę zgodnie z sidePref
     useEffect(() => {
       if (!has) return
       if (sidePref === 'front') setShowBack(false)
       else if (sidePref === 'back') setShowBack(true)
       else setShowBack(Math.random() < 0.5) // random
     }, [reviewIdx, sidePref, has])
-
-    useEffect(() => { setShowBack(false) }, [reviewIdx])
 
     if (!has) return <p className="text-sm text-gray-500">Brak fiszek do przeglądu.</p>
 
@@ -235,10 +274,13 @@ export default function App() {
         <div className="flex items-center justify-between mb-2">
           <span className="text-xs text-gray-500">{(reviewIdx % filtered.length) + 1} / {filtered.length}</span>
           <div className="flex items-center gap-2">
-            <button className="text-xs underline" onClick={() => setReviewIdx((i) => (i + 1) % filtered.length)}>Pomiń →</button>
-            <button className="text-xs underline" onClick={() => toggleKnown(card)}>{card.known ? 'Oznacz jako NIEznaną' : 'Oznacz jako zapamiętaną'}</button>
+            <button className="text-xs underline" onClick={() => setReviewIdx(i => (i + 1) % filtered.length)}>Następna →</button>
+            <button className="text-xs underline" onClick={() => toggleKnown(card)}>
+              {card.known ? 'Oznacz jako NIEznaną' : 'Oznacz jako zapamiętaną'}
+            </button>
           </div>
         </div>
+
         <motion.div
           className="w-full bg-white rounded-2xl shadow p-6 cursor-pointer min-h-[140px] flex items-center justify-center text-center relative"
           onClick={() => setShowBack(!showBack)}
@@ -247,13 +289,18 @@ export default function App() {
           transition={{ duration: 0.4 }}
           style={{ transformStyle: 'preserve-3d' }}
         >
-          <div style={{ backfaceVisibility: 'hidden' }} className="text-xl font-semibold">{card.front}</div>
-          <div style={{ backfaceVisibility: 'hidden', transform: 'rotateY(180deg)', position: 'absolute' }} className="text-xl">{card.back}</div>
+          {/* Front */}
+          <div style={{ backfaceVisibility: 'hidden' }} className="text-xl font-semibold">
+            {showBack ? card.back : card.front}
+          </div>
+          {/* Back (druga strona karty) */}
+          <div
+            style={{ backfaceVisibility: 'hidden', transform: 'rotateY(180deg)', position: 'absolute' }}
+            className="text-xl"
+          >
+            {showBack ? card.front : card.back}
+          </div>
         </motion.div>
-        <div className="flex gap-2 mt-4">
-          <button className="px-3 py-2 rounded-xl bg-gray-100 hover:bg-gray-200" onClick={() => setReviewIdx((i) => (i + 1) % filtered.length)}>Następna</button>
-          <button className="px-3 py-2 rounded-xl bg-gray-100 hover:bg-gray-200" onClick={() => setShowBack(true)}>Pokaż odpowiedź</button>
-        </div>
       </div>
     )
   }
@@ -263,7 +310,9 @@ export default function App() {
       <main className="min-h-screen bg-gradient-to-b from-slate-50 to-slate-100 flex items-center justify-center p-4">
         <div className="max-w-md w-full bg-white rounded-2xl shadow-xl p-6">
           <h1 className="text-2xl font-bold">Fiszki – logowanie</h1>
-          <p className="text-sm text-gray-600 mt-2">Podaj e-mail, wyślę link do logowania (bez hasła).</p>
+          <p className="text-sm text-gray-600 mt-2">Podaj e-mail (magic link) albo zaloguj hasłem właściciela.</p>
+
+          {/* Magic link */}
           <form onSubmit={signInWithEmail} className="mt-4 space-y-3">
             <input type="email" required placeholder="twoj@email.pl" value={email} onChange={(e) => setEmail(e.target.value)} className="w-full border rounded-xl px-3 py-2" />
             <button disabled={loading} className="w-full rounded-xl px-4 py-2 bg-black text-white disabled:opacity-50">
@@ -271,6 +320,7 @@ export default function App() {
             </button>
           </form>
 
+          {/* Owner password */}
           <hr className="my-4" />
           <p className="text-sm font-semibold">Logowanie właściciela (e-mail + hasło)</p>
           <form onSubmit={signInWithPassword} className="mt-2 space-y-2">
@@ -282,7 +332,6 @@ export default function App() {
           </form>
 
           {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
-          <p className="text-xs text-gray-500 mt-4">Po zalogowaniu wrócisz na tę stronę.</p>
         </div>
       </main>
     )
@@ -294,12 +343,16 @@ export default function App() {
         <header className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
           <h1 className="text-2xl font-bold">Twoje fiszki</h1>
           <div className="flex flex-wrap items-center gap-3">
-            <label className="text-sm flex items-center gap-2 bg-white rounded-xl shadow px-3 py-2">
-              <input type="checkbox" checked={hideKnown} onChange={(e)=>setHideKnown(e.target.checked)} />
-              Ukrywaj zapamiętane
-            </label>
             <div className="text-sm bg-white rounded-xl shadow px-3 py-2 flex items-center gap-2">
-              <span>Pokaż najpierw:</span>
+              <span>Pokaż:</span>
+              <select className="border rounded-lg px-2 py-1" value={showFilter} onChange={(e)=>setShowFilter(e.target.value)}>
+                <option value="all">wszystkie</option>
+                <option value="unknown">nie-zapamiętane</option>
+                <option value="known">zapamiętane</option>
+              </select>
+            </div>
+            <div className="text-sm bg-white rounded-xl shadow px-3 py-2 flex items-center gap-2">
+              <span>Najpierw:</span>
               <select className="border rounded-lg px-2 py-1" value={sidePref} onChange={(e)=>setSidePref(e.target.value)}>
                 <option value="front">front</option>
                 <option value="back">back</option>
@@ -308,9 +361,8 @@ export default function App() {
             </div>
             <div className="text-sm bg-white rounded-xl shadow px-3 py-2 flex items-center gap-2">
               <span>Folder:</span>
-              <select className="border rounded-lg px-2 py-1" value={folderFilter} onChange={(e)=>setFolderFilter(e.target.value)}>
-                <option value="ALL">Wszystkie</option>
-                {folders.map(f => <option key={f} value={f}>{f}</option>)}
+              <select className="border rounded-lg px-2 py-1" value={activeFolderId} onChange={(e)=>setActiveFolderId(e.target.value)}>
+                {foldersForSelect.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
               </select>
             </div>
             <div className="flex items-center gap-3">
@@ -320,23 +372,44 @@ export default function App() {
           </div>
         </header>
 
+        {/* Foldery: dodawanie + lista */}
+        <section className="mt-6 bg-white rounded-2xl shadow p-4">
+          <h2 className="font-semibold mb-3">Foldery</h2>
+          <form onSubmit={addFolder} className="flex gap-2">
+            <input className="flex-1 border rounded-xl px-3 py-2" placeholder="Nazwa folderu (np. Angielski B1)" value={newFolderName} onChange={e=>setNewFolderName(e.target.value)} />
+            <button className="px-4 py-2 rounded-xl bg-black text-white">Dodaj folder</button>
+          </form>
+          <ul className="mt-3 flex flex-wrap gap-2 text-sm">
+            {folders.map(f => (
+              <li key={f.id} className={`px-3 py-1 rounded-full border ${activeFolderId===f.id?'bg-black text-white':'bg-gray-50'}`}>
+                {f.name}
+              </li>
+            ))}
+          </ul>
+        </section>
+
         <section className="mt-6 grid md:grid-cols-2 gap-4">
+          {/* Dodawanie fiszki */}
           <div className="bg-white rounded-2xl shadow p-4">
             <h2 className="font-semibold mb-3">Dodaj fiszkę</h2>
-            <form onSubmit={handleAdd} className="space-y-2">
+            <form onSubmit={handleAddCard} className="space-y-2">
               <input className="w-full border rounded-xl px-3 py-2" placeholder="Przód (pytanie)" value={newFront} onChange={e => setNewFront(e.target.value)} />
               <textarea className="w-full border rounded-xl px-3 py-2" placeholder="Tył (odpowiedź)" value={newBack} onChange={e => setNewBack(e.target.value)} />
-              <input className="w-full border rounded-xl px-3 py-2" placeholder="Folder (np. Angielski/IT)" value={newFolder} onChange={e => setNewFolder(e.target.value)} />
+              <select className="w-full border rounded-xl px-3 py-2" value={newCardFolderId || ''} onChange={e => setNewCardFolderId(e.target.value || null)}>
+                <option value="">(bez folderu)</option>
+                {folders.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
+              </select>
               <button className="px-4 py-2 rounded-xl bg-black text-white">Dodaj</button>
             </form>
             <div className="mt-4">
-              <label className="text-sm font-medium">Import CSV (nagłówki: front, back, folder?, known?)</label>
+              <label className="text-sm font-medium">Import CSV (front, back, folder_name?, known?)</label>
               <input type="file" accept=".csv" onChange={handleCSVUpload} className="mt-2 block" />
             </div>
             {loading && <p className="text-sm text-gray-600 mt-2">Pracuję…</p>}
             {error && <p className="text-sm text-red-600 mt-2">{error}</p>}
           </div>
 
+          {/* Tryb nauki */}
           <div className="bg-white rounded-2xl shadow p-4">
             <h2 className="font-semibold mb-3">Tryb nauki</h2>
             <input className="w-full border rounded-xl px-3 py-2 mb-3" placeholder="Szukaj w fiszkach…" value={q} onChange={e => setQ(e.target.value)} />
@@ -344,9 +417,9 @@ export default function App() {
           </div>
         </section>
 
+        {/* Lista fiszek */}
         <section className="mt-6 bg-white rounded-2xl shadow p-4">
           <h2 className="font-semibold mb-3">Wszystkie fiszki ({filtered.length})</h2>
-          <input className="w-full border rounded-xl px-3 py-2 mb-3" placeholder="Filtruj…" value={q} onChange={e => setQ(e.target.value)} />
           <ul className="divide-y">
             <AnimatePresence>
               {filtered.map(card => (
@@ -355,7 +428,9 @@ export default function App() {
                   <div className="flex-1">
                     <p className="font-medium">{card.front}</p>
                     <p className="text-sm text-gray-600 mt-1">{card.back}</p>
-                    <p className="text-xs text-gray-500 mt-1">{card.folder ? `Folder: ${card.folder}` : 'Folder: —'}</p>
+                    <p className="text-xs text-gray-500 mt-1">
+                      {card.known ? '✅ Zapamiętana' : '🕑 Do nauki'}
+                    </p>
                   </div>
                   <div className="flex items-center gap-2">
                     <label className="text-xs flex items-center gap-1">
@@ -369,12 +444,7 @@ export default function App() {
             </AnimatePresence>
           </ul>
         </section>
-
-        <footer className="text-xs text-gray-500 mt-8 text-center">
-          React + Supabase • Foldery i „Zapamiętane” • CSV: nagłówki <code>front</code>, <code>back</code>, <code>folder?</code>, <code>known?</code>.
-        </footer>
       </div>
     </main>
   )
 }
-
