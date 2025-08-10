@@ -39,7 +39,7 @@ export default function App() {
   // dodawanie fiszki
   const [newFront, setNewFront] = useState('')
   const [newBack, setNewBack] = useState('')
-  const [newCardFolderId, setNewCardFolderId] = useState(null)
+  const [newCardFolderId, setNewCardFolderId] = useState('') // WYMAGANY
 
   // dodawanie folderu
   const [newFolderName, setNewFolderName] = useState('')
@@ -150,9 +150,13 @@ export default function App() {
   async function handleAddCard(e) {
     e.preventDefault()
     if (!newFront.trim() || !newBack.trim()) return
+    if (!newCardFolderId) { // folder WYMAGANY
+      setError('Wybierz folder dla tej fiszki.')
+      return
+    }
     try {
       await addCard(newFront.trim(), newBack.trim(), newCardFolderId)
-      setNewFront(''); setNewBack(''); setNewCardFolderId(null)
+      setNewFront(''); setNewBack(''); setNewCardFolderId('') // reset wyboru
       fetchCards()
     } catch (err) { setError(err.message) }
   }
@@ -333,7 +337,7 @@ export default function App() {
 
     return (
       <div className="mt-6">
-        {/* Karta — bez górnego paska z „Następna →” i bez przycisku oznaczania */}
+        {/* Karta — bez górnego paska */}
         <div
           className={`${containerClasses} relative cursor-pointer`}
           onClick={() => setShowBack(s => !s)}
@@ -364,7 +368,7 @@ export default function App() {
             disabled={!!card.known}
             title={card.known ? 'Już zapamiętana' : 'Oznacz tę fiszkę jako zapamiętaną'}
           >
-            Zapamiętaj
+            Zapamiętana
           </button>
         </div>
       </div>
@@ -489,8 +493,14 @@ export default function App() {
             <form onSubmit={handleAddCard} className="space-y-2">
               <input className="w-full border rounded-xl px-3 py-2" placeholder="Przód (pytanie)" value={newFront} onChange={e => setNewFront(e.target.value)} />
               <textarea className="w-full border rounded-xl px-3 py-2" placeholder="Tył (odpowiedź)" value={newBack} onChange={e => setNewBack(e.target.value)} />
-              <select className="w-full border rounded-xl px-3 py-2" value={newCardFolderId || ''} onChange={e => setNewCardFolderId(e.target.value || null)}>
-                <option value="">(bez folderu)</option>
+              <select
+                className="w-full border rounded-xl px-3 py-2"
+                value={newCardFolderId}
+                onChange={e => setNewCardFolderId(e.target.value)}
+                required
+                title="Wybierz folder dla tej fiszki"
+              >
+                <option value="" disabled>(WYBIERZ FOLDER — WYMAGANE)</option>
                 {folders.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
               </select>
               <button className="px-4 py-2 rounded-xl bg-black text-white">Dodaj</button>
