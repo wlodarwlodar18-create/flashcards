@@ -108,7 +108,7 @@ export default function App() {
   const [shuffleOnLoad, setShuffleOnLoad] = useState(true)
   const [firstLoad, setFirstLoad] = useState(true)
 
-  // TTS języki (UI na dole w „Dodaj fiszkę”)
+  // TTS języki
   const [ttsFrontLang, setTtsFrontLang] = useState('auto')
   const [ttsBackLang, setTtsBackLang] = useState('auto')
 
@@ -275,7 +275,7 @@ export default function App() {
     else setCards(prev => prev.filter(c => c.id !== id))
   }
 
-  // Toggle „Zapamiętana” (odklikiwalny, bez restartu auto)
+  // Toggle „Zapamiętana”
   async function toggleKnown(card) {
     const next = !card.known
     setCards(prev => prev.map(c => c.id === card.id ? { ...c, known: next } : c))
@@ -397,15 +397,31 @@ export default function App() {
     }
   }
 
-  // ===== GENEROWANIE 30+ (losowe EN + tłumaczenie PL) =====
-  async function fetchRandomWords(n = 30) {
-    const url = `https://random-word-api.vercel.app/api?words=${n}`
-    const res = await fetch(url)
-    if (!res.ok) throw new Error('Błąd pobierania losowych słów')
-    const data = await res.json()
-    return Array.isArray(data) ? data : []
+  // ===== LISTA 1000 NAJCZĘSTSZYCH – z pliku w /public =====
+  async function loadTopCommonWords() {
+    // Umieść plik w public/common-en-1000.txt (jedno słowo na linię)
+    const res = await fetch('/common-en-1000.txt', { cache: 'no-store' })
+    if (!res.ok) throw new Error('Nie znaleziono pliku common-en-1000.txt w /public')
+    const text = await res.text()
+    const words = text
+      .split(/\r?\n/)
+      .map(w => w.trim().toLowerCase())
+      .filter(Boolean)
+    if (words.length < 30) throw new Error('Lista zawiera zbyt mało słów (min. 30).')
+    return words
   }
 
+  function sampleUnique(arr, n) {
+    if (n >= arr.length) return shuffle(arr)
+    const a = [...arr]
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1))
+      ;[a[i], a[j]] = [a[j], a[i]]
+    }
+    return a.slice(0, n)
+  }
+
+  // ===== GENEROWANIE 30+ z listy 1000 EN (tłumaczenie na PL) =====
   async function translateEnToPl(text) {
     const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=en|pl`
     const res = await fetch(url)
@@ -417,12 +433,12 @@ export default function App() {
 
   async function generate30IntoFolder(folder) {
     if (!folder?.id) return
-    if (!window.confirm(`Dodać ~30 losowych słów do folderu „${folder.name}”?`)) return
+    if (!window.confirm(`Dodać 30 losowych słów z listy 1000 do folderu „${folder.name}”?`)) return
     setLoading(true); setError('')
     try {
-      const words = await fetchRandomWords(30)
-      // tłumacz z kontrolą współbieżności (np. 4 na raz), by nie zajechać darmowego API
-      const translated = await mapLimit(words, 4, async (w) => {
+      const topWords = await loadTopCommonWords()     // <= wczytaj z /public
+      const chosen = sampleUnique(topWords, 30)       // <= wylosuj 30
+      const translated = await mapLimit(chosen, 4, async (w) => {
         try {
           const pl = await translateEnToPl(w)
           return { front: w, back: pl }
@@ -441,7 +457,6 @@ export default function App() {
           folder_id: folder.id
         }))
       if (!payload.length) throw new Error('Nie udało się przygotować danych do wstawienia.')
-      // wstaw w kawałkach
       const chunkSize = 500
       for (let i = 0; i < payload.length; i += chunkSize) {
         const chunk = payload.slice(i, i + chunkSize)
@@ -452,8 +467,8 @@ export default function App() {
       alert(`Dodano ${payload.length} fiszek do folderu „${folder.name}”.`)
     } catch (err) {
       console.error(err)
-      setError(err.message || 'Nie udało się dodać 30+ słów.')
-      alert('Wystąpił błąd podczas dodawania. Spróbuj ponownie za chwilę.')
+      setError(err.message || 'Nie udało się dodać 30 słów.')
+      alert('Wystąpił błąd podczas dodawania. Upewnij się, że dodałeś plik /public/common-en-1000.txt.')
     } finally {
       setLoading(false)
     }
@@ -486,7 +501,6 @@ export default function App() {
     const runIdRef = useRef(0)
     const lastSuppressRef = useRef(suppressAutoTick)
 
-    // startowa strona wg preferencji przy każdej nowej karcie
     useEffect(() => {
       if (!has) return
       if (sidePref === 'front') setShowBack(false)
@@ -533,16 +547,12 @@ export default function App() {
       setReviewIdx(i => (i + 1) % filtered.length)
     }
 
-    // AUTO: czytaj wg „Najpierw” → czekaj (Przód) → flip + czytaj → czekaj (Tył) → następna
     useEffect(() => {
       if (!autoMode || !has) return
-
-      // jeżeli przyczyną rerenderu był toggle „Zapamiętana”, pomiń ten cykl
       if (lastSuppressRef.current !== suppressAutoTick) {
         lastSuppressRef.current = suppressAutoTick
         return
       }
-
       stopAll()
       const myRunId = ++runIdRef.current
 
@@ -558,7 +568,6 @@ export default function App() {
 
       timerA.current = setTimeout(() => {
         if (runIdRef.current !== myRunId) return
-
         const flippedBack = !startBack
         setShowBack(flippedBack)
         const textB = flippedBack ? card.back : card.front
@@ -603,7 +612,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* Pasek akcji – responsywny */}
         <div className="mt-3 sm:mt-4 grid grid-cols-2 sm:flex sm:flex-wrap gap-2 sm:gap-3 items-center">
           <button
             ref={nextBtnRef}
@@ -636,7 +644,6 @@ export default function App() {
           >
             {autoMode ? 'Stop (Tryb auto)' : 'Tryb auto'}
           </button>
-          {/* ZAWSZE „Zapamiętane” — tylko kolor się zmienia */}
           <button
             className={`px-3 py-2 h-10 rounded-xl ${card.known ? 'bg-emerald-600 text-white' : 'bg-gray-200 text-black hover:bg-gray-300'}`}
             onClick={() => toggleKnown(card)}
@@ -646,7 +653,6 @@ export default function App() {
           </button>
         </div>
 
-        {/* Suwaki czasu — równy zakres 1–15 s */}
         <div className="mt-4 grid sm:grid-cols-2 gap-4 bg-white/60 rounded-xl p-3 border">
           <div>
             <label className="text-sm font-medium">Przód (sekundy)</label>
@@ -686,7 +692,6 @@ export default function App() {
           <h1 className="text-2xl font-bold">Fiszki – logowanie</h1>
           <p className="text-sm text-gray-600 mt-2">Podaj e-mail (magic link) albo zaloguj hasłem właściciela.</p>
 
-          {/* Magic link */}
           <form onSubmit={signInWithEmail} className="mt-4 space-y-3">
             <input type="email" required placeholder="twoj@email.pl" value={email} onChange={(e) => setEmail(e.target.value)} className="w-full border rounded-xl px-3 py-2 h-10" />
             <button disabled={loading} className="w-full rounded-xl px-4 h-10 bg-black text-white disabled:opacity-50">
@@ -694,7 +699,6 @@ export default function App() {
             </button>
           </form>
 
-          {/* Owner password */}
           <hr className="my-4" />
           <p className="text-sm font-semibold">Logowanie właściciela (e-mail + hasło)</p>
           <form onSubmit={signInWithPassword} className="mt-2 space-y-2">
@@ -714,12 +718,10 @@ export default function App() {
   return (
     <main className="min-h-screen bg-gradient-to-b from-slate-50 to-slate-100 p-4">
       <div className="max-w-6xl mx-auto">
-        {/* Header — responsywna siatka kontrolek */}
         <header className="flex flex-col gap-3">
           <h1 className="text-2xl font-bold">Twoje fiszki</h1>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-            {/* Pokaż */}
             <div className="text-sm bg-white rounded-xl shadow px-3 py-2 flex items-center gap-2">
               <span className="whitespace-nowrap">Pokaż:</span>
               <select className="border rounded-lg px-2 py-1 h-10 w-full" value={showFilter} onChange={(e)=>setShowFilter(e.target.value)}>
@@ -729,7 +731,6 @@ export default function App() {
               </select>
             </div>
 
-            {/* Najpierw */}
             <div className="text-sm bg-white rounded-xl shadow px-3 py-2 flex items-center gap-2">
               <span className="whitespace-nowrap">Najpierw:</span>
               <select className="border rounded-lg px-2 py-1 h-10 w-full" value={sidePref} onChange={(e)=>setSidePref(e.target.value)}>
@@ -739,7 +740,6 @@ export default function App() {
               </select>
             </div>
 
-            {/* Losowanie */}
             <div className="text-sm bg-white rounded-xl shadow px-3 py-2 flex items-center justify-between gap-2">
               <label className="flex items-center gap-2 cursor-pointer">
                 <input type="checkbox" checked={shuffleOnLoad} onChange={(e)=>setShuffleOnLoad(e.target.checked)} />
@@ -755,7 +755,6 @@ export default function App() {
               </button>
             </div>
 
-            {/* Folder */}
             <div className="text-sm bg-white rounded-xl shadow px-3 py-2 flex items-center gap-2 sm:col-span-2 lg:col-span-1">
               <span className="whitespace-nowrap">Folder:</span>
               <select className="border rounded-lg px-2 py-1 h-10 w-full" value={activeFolderId} onChange={(e)=>setActiveFolderId(e.target.value)}>
@@ -763,7 +762,6 @@ export default function App() {
               </select>
             </div>
 
-            {/* User + Wyloguj */}
             <div className="text-sm bg-white rounded-xl shadow px-3 py-2 flex items-center justify-between gap-2 sm:col-span-2 lg:col-span-1">
               <span className="text-gray-600 truncate">{session.user.email}</span>
               <button onClick={signOut} className="px-3 py-2 h-10 rounded-xl bg-gray-100 hover:bg-gray-200 shrink-0">Wyloguj</button>
@@ -797,11 +795,11 @@ export default function App() {
                   {f.name}
                 </button>
                 <div className="flex items-center gap-2">
-                  {/* NOWY PRZYCISK 30+ */}
+                  {/* NOWY PRZYCISK 30+ — z listy 1000 */}
                   <button
                     className={`px-2 py-1 h-9 rounded-lg border ${activeFolderId===f.id ? 'bg-white/10' : 'hover:bg-white'}`}
                     onClick={() => generate30IntoFolder(f)}
-                    title="Dodaj około 30 losowych słów EN->PL do tego folderu"
+                    title="Dodaj 30 losowych słów (z listy 1000) EN→PL do tego folderu"
                     disabled={loading}
                   >
                     30+
@@ -830,7 +828,6 @@ export default function App() {
                 value={newFront}
                 onChange={e => setNewFront(e.target.value)}
               />
-              {/* Tył jako input text (bez strzałek / bez zmiany rozmiaru) */}
               <input
                 type="text"
                 className="w-full border rounded-xl px-3 h-10"
@@ -855,7 +852,6 @@ export default function App() {
             <div className="mt-4">
               <label className="text-sm font-medium">Import CSV (Przód, Tył)</label>
 
-              {/* Pasek wyboru folderu + przycisk pliku */}
               <div className="mt-2 flex flex-col lg:flex-row gap-2 lg:items-center">
                 <select
                   className="border rounded-xl px-3 h-10 w-full lg:w-auto"
@@ -868,7 +864,6 @@ export default function App() {
                   {folders.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
                 </select>
 
-                {/* Stylizowany przycisk do wyboru pliku */}
                 <label
                   className={`inline-flex items-center justify-center gap-2 px-4 h-10 rounded-xl border bg-white cursor-pointer hover:bg-gray-50 whitespace-nowrap shrink-0 w-full lg:w-auto ${!importFolderId ? 'opacity-60 cursor-not-allowed' : ''}`}
                   title={!importFolderId ? 'Najpierw wybierz folder' : 'Wybierz plik CSV'}
@@ -884,7 +879,6 @@ export default function App() {
                 </label>
               </div>
 
-              {/* INFO pod paskiem wyboru */}
               <p className="text-xs text-gray-500 mt-2">
                 Oczekiwane nagłówki: <code>Przód</code>, <code>Tył</code>.
               </p>
@@ -893,7 +887,7 @@ export default function App() {
               )}
             </div>
 
-            {/* Języki czytania — na dole sekcji */}
+            {/* Języki czytania */}
             <div className="mt-5 bg-white rounded-xl border p-3">
               <p className="text-sm font-medium mb-2">Czytanie na głos — język</p>
               <div className="grid sm:grid-cols-2 gap-3">
@@ -903,7 +897,6 @@ export default function App() {
                     className="border rounded-lg px-2 py-1 h-10"
                     value={ttsFrontLang}
                     onChange={(e)=>setTtsFrontLang(e.target.value)}
-                    title="Wymuś język czytania dla przodu"
                   >
                     <option value="auto">Auto</option>
                     <option value="pl-PL">Polski (pl-PL)</option>
@@ -923,7 +916,6 @@ export default function App() {
                     className="border rounded-lg px-2 py-1 h-10"
                     value={ttsBackLang}
                     onChange={(e)=>setTtsBackLang(e.target.value)}
-                    title="Wymuś język czytania dla tyłu"
                   >
                     <option value="auto">Auto</option>
                     <option value="pl-PL">Polski (pl-PL)</option>
