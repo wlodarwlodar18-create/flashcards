@@ -254,56 +254,82 @@ export default function App() {
 
   // ===== Tryb nauki
   function Review() {
-    const has = filtered.length > 0
-    const safeLen = Math.max(1, filtered.length)
-    const card = filtered[reviewIdx % safeLen]
-    const [showBack, setShowBack] = useState(false)
+  const has = filtered.length > 0
+  const safeLen = Math.max(1, filtered.length)
+  const card = filtered[reviewIdx % safeLen]
+  const [showBack, setShowBack] = useState(false)
 
-    // ustaw startową stronę zgodnie z sidePref
-    useEffect(() => {
-      if (!has) return
-      if (sidePref === 'front') setShowBack(false)
-      else if (sidePref === 'back') setShowBack(true)
-      else setShowBack(Math.random() < 0.5) // random
-    }, [reviewIdx, sidePref, has])
+  // ustaw startową stronę zgodnie z preferencją (front/back/losowo)
+  useEffect(() => {
+    if (!has) return
+    if (sidePref === 'front') setShowBack(false)
+    else if (sidePref === 'back') setShowBack(true)
+    else setShowBack(Math.random() < 0.5) // random
+  }, [reviewIdx, sidePref, has])
 
-    if (!has) return <p className="text-sm text-gray-500">Brak fiszek do przeglądu.</p>
+  if (!has) return <p className="text-sm text-gray-500">Brak fiszek do przeglądu.</p>
 
-    return (
-      <div className="mt-6">
-        <div className="flex items-center justify-between mb-2">
-          <span className="text-xs text-gray-500">{(reviewIdx % filtered.length) + 1} / {filtered.length}</span>
-          <div className="flex items-center gap-2">
-            <button className="text-xs underline" onClick={() => setReviewIdx(i => (i + 1) % filtered.length)}>Następna →</button>
-            <button className="text-xs underline" onClick={() => toggleKnown(card)}>
-              {card.known ? 'Oznacz jako NIEznaną' : 'Oznacz jako zapamiętaną'}
-            </button>
-          </div>
-        </div>
+  // pastelowe kolory i delikatne obramowanie
+  const containerClasses =
+    `w-full rounded-2xl shadow p-6 min-h-[160px] flex items-center justify-center text-center border 
+     ${showBack ? 'bg-sky-50 border-sky-200' : 'bg-emerald-50 border-emerald-200'}`
 
-        <motion.div
-          className="w-full bg-white rounded-2xl shadow p-6 cursor-pointer min-h-[140px] flex items-center justify-center text-center relative"
-          onClick={() => setShowBack(!showBack)}
-          initial={{ rotateY: 0 }}
-          animate={{ rotateY: showBack ? 180 : 0 }}
-          transition={{ duration: 0.4 }}
-          style={{ transformStyle: 'preserve-3d' }}
-        >
-          {/* Front */}
-          <div style={{ backfaceVisibility: 'hidden' }} className="text-xl font-semibold">
-            {showBack ? card.back : card.front}
-          </div>
-          {/* Back (druga strona karty) */}
-          <div
-            style={{ backfaceVisibility: 'hidden', transform: 'rotateY(180deg)', position: 'absolute' }}
-            className="text-xl"
+  const badgeClasses =
+    `absolute top-3 right-3 text-xs px-2 py-1 rounded-full border 
+     ${showBack ? 'bg-sky-100 border-sky-200 text-sky-800' : 'bg-emerald-100 border-emerald-200 text-emerald-800'}`
+
+  return (
+    <div className="mt-6">
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-xs text-gray-500">
+          {(reviewIdx % filtered.length) + 1} / {filtered.length}
+        </span>
+        <div className="flex items-center gap-2">
+          <button
+            className="text-xs underline"
+            onClick={() => setReviewIdx(i => (i + 1) % filtered.length)}
           >
-            {showBack ? card.front : card.back}
-          </div>
-        </motion.div>
+            Następna →
+          </button>
+          <button
+            className="text-xs underline"
+            onClick={() => toggleKnown(card)}
+          >
+            {card.known ? 'Oznacz jako NIEznaną' : 'Oznacz jako zapamiętaną'}
+          </button>
+        </div>
       </div>
-    )
-  }
+
+      {/* prosty blok bez animacji obrotu, kliknięcie przełącza front/back */}
+      <div
+        className={`${containerClasses} relative cursor-pointer`}
+        onClick={() => setShowBack(!showBack)}
+        title="Kliknij, aby przełączyć front/back"
+      >
+        <span className={badgeClasses}>{showBack ? 'Back' : 'Front'}</span>
+        <div className="text-xl leading-relaxed max-w-[95%]">
+          {showBack ? card.back : card.front}
+        </div>
+      </div>
+
+      <div className="flex gap-2 mt-4">
+        <button
+          className="px-3 py-2 rounded-xl bg-gray-100 hover:bg-gray-200"
+          onClick={() => setReviewIdx(i => (i + 1) % filtered.length)}
+        >
+          Następna
+        </button>
+        <button
+          className="px-3 py-2 rounded-xl bg-gray-100 hover:bg-gray-200"
+          onClick={() => setShowBack(s => !s)}
+        >
+          {showBack ? 'Pokaż front' : 'Pokaż back'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
 
   if (!session) {
     return (
