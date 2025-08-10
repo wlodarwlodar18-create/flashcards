@@ -40,7 +40,7 @@ function detectLang(text) {
   // łacińskie diakrytyki
   if (/[ąćęłńóśźż]/i.test(raw)) return 'pl-PL'
   if (/[äöüß]/i.test(raw)) return 'de-DE'
-  if (/[ñáéíóúü]/i.test(raw)) return 'es-ES'
+  if (/[ñáéíóü]/i.test(raw)) return 'es-ES'
   if (/[çâêëïîôûùéèà]/i.test(raw)) return 'fr-FR'
   if (/[àèéìòù]/i.test(raw)) return 'it-IT'
   if (/[ãõçáéíóú]/i.test(raw)) return 'pt-PT'
@@ -134,7 +134,6 @@ export default function App() {
       const { data: { session } } = await supabase.auth.getSession()
       setSession(session)
       const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s))
-      // cleanup
       return () => { sub?.subscription?.unsubscribe?.() }
     }
     try {
@@ -388,7 +387,7 @@ export default function App() {
     return arr
   }, [cards, activeFolderId, showFilter, q])
 
-  // ===== Tryb nauki — karta + Tryb auto (stabilny)
+  // ===== Tryb nauki — karta + Tryb auto (stabilny, zgodny z „Najpierw”)
   function Review({ autoMode, onStopAuto, phaseA, phaseB, ttsFrontLang, ttsBackLang }) {
     const has = filtered.length > 0
     const safeLen = Math.max(1, filtered.length)
@@ -451,27 +450,35 @@ export default function App() {
       setReviewIdx(i => (i + 1) % filtered.length)
     }
 
-    // AUTO: czytaj widoczne → czekaj A → flip + czytaj → czekaj B → następna
+    // AUTO: czytaj NAJPIERW wg „Najpierw” → czekaj A → flip + czytaj → czekaj B → następna
     useEffect(() => {
       if (!autoMode || !has) return
 
       stopAll()
       const myRunId = ++runIdRef.current
-      startSideRef.current = showBack
 
-      // FAZA A — czytamy to, co jest widoczne TERAZ
-      const isBackA = startSideRef.current
-      const textA = isBackA ? card.back : card.front  // <-- widoczne = showBack?back:front
-      speak(textA, isBackA)
+      // Wylicz stronę startową na podstawie preferencji:
+      //  front -> false (Przód), back -> true (Tył), random -> aktualny showBack
+      const startBack =
+        sidePref === 'front' ? false :
+        sidePref === 'back'  ? true  :
+        showBack
+
+      startSideRef.current = startBack
+      setShowBack(startBack) // upewnij UI
+
+      // FAZA A — czytamy NAJPIERW zgodnie z preferencją
+      const textA = startBack ? card.back : card.front
+      speak(textA, startBack)
 
       timerA.current = setTimeout(() => {
         if (runIdRef.current !== myRunId) return
 
-        // flip + FAZA B — czytamy drugą stronę
-        setShowBack(prev => !prev)
-        const isBackB = !startSideRef.current
-        const textB = isBackB ? card.back : card.front
-        speak(textB, isBackB)
+        // FLIP + FAZA B — czytamy drugą stronę
+        const flippedBack = !startBack
+        setShowBack(flippedBack)
+        const textB = flippedBack ? card.back : card.front
+        speak(textB, flippedBack)
 
         timerB.current = setTimeout(() => {
           if (runIdRef.current !== myRunId) return
@@ -481,8 +488,8 @@ export default function App() {
       }, Math.max(1, phaseA) * 1000)
 
       return () => stopAll()
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [autoMode, reviewIdx, filtered, phaseA, phaseB, ttsFrontLang, ttsBackLang, has])
+      // ważne: zależymy od sidePref (żeby reagować na zmianę „Najpierw”)
+    }, [autoMode, reviewIdx, filtered, phaseA, phaseB, ttsFrontLang, ttsBackLang, has, sidePref]) // NIE dodajemy showBack
 
     if (!has) return <p className="text-sm text-gray-500">Brak fiszek do przeglądu.</p>
 
@@ -636,7 +643,7 @@ export default function App() {
       <main className="min-h-screen bg-gradient-to-b from-slate-50 to-slate-100 flex items-center justify-center p-4">
         <div className="max-w-md w-full bg-white rounded-2xl shadow-xl p-6">
           <h1 className="text-2xl font-bold">Fiszki – logowanie</h1>
-          <p className="text-sm text-gray-600 mt-2">Podaj e-mail (magic link) albo zaloguj hasłem właściciela.</p>
+        <p className="text-sm text-gray-600 mt-2">Podaj e-mail (magic link) albo zaloguj hasłem właściciela.</p>
 
           {/* Magic link */}
           <form onSubmit={signInWithEmail} className="mt-4 space-y-3">
