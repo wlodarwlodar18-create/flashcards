@@ -730,7 +730,8 @@ export default function App() {
             <h2 className="font-semibold mb-3">Dodaj fiszkę</h2>
             <form onSubmit={handleAddCard} className="space-y-2">
               <input className="w-full border rounded-xl px-3 h-10" placeholder="Przód (pytanie)" value={newFront} onChange={e => setNewFront(e.target.value)} />
-              <textarea className="w-full border rounded-xl px-3 py-2 min-h-[100px]" placeholder="Tył (odpowiedź)" value={newBack} onChange={e => setNewBack(e.target.value)} />
+              {/* ZMNIEJSZONE pole Tył do h-10, bez rozciągania */}
+              <textarea className="w-full border rounded-xl px-3 py-2 h-10 resize-none" placeholder="Tył (odpowiedź)" value={newBack} onChange={e => setNewBack(e.target.value)} />
               <select
                 className="w-full border rounded-xl px-3 h-10"
                 value={newCardFolderId}
@@ -748,7 +749,7 @@ export default function App() {
             <div className="mt-4">
               <label className="text-sm font-medium">Import CSV (Przód, Tył)</label>
 
-              {/* Wiersz importu — responsywny i „nierozjeżdżalny” */}
+              {/* Pasek wyboru folderu + przycisk pliku */}
               <div className="mt-2 flex flex-col lg:flex-row gap-2 lg:items-center">
                 <select
                   className="border rounded-xl px-3 h-10 w-full lg:w-auto"
@@ -775,19 +776,18 @@ export default function App() {
                     disabled={!importFolderId}
                   />
                 </label>
-
-                {/* Info tekst — zawija się ładnie na telefonie */}
-                <p className="text-xs text-gray-500 lg:ml-auto">
-                  Oczekiwane nagłówki: <code>Przód</code>, <code>Tył</code>.
-                </p>
               </div>
 
+              {/* INFO — TERAZ POD paskiem wyboru */}
+              <p className="text-xs text-gray-500 mt-2">
+                Oczekiwane nagłówki: <code>Przód</code>, <code>Tył</code>.
+              </p>
               {!importFolderId && (
                 <p className="text-xs text-red-600 mt-1">Wybór folderu jest wymagany, aby wczytać plik.</p>
               )}
             </div>
 
-            {/* >>> Języki czytania przeniesione tutaj <<< */}
+            {/* Języki czytania — na dole sekcji */}
             <div className="mt-5 bg-white rounded-xl border p-3">
               <p className="text-sm font-medium mb-2">Czytanie na głos — język</p>
               <div className="grid sm:grid-cols-2 gap-3">
