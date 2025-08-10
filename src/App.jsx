@@ -458,11 +458,11 @@ export default function App() {
       const myRunId = ++runIdRef.current
 
       // Wylicz stronę startową na podstawie preferencji:
-      //  front -> false (Przód), back -> true (Tył), random -> aktualny showBack
-      const startBack =
-        sidePref === 'front' ? false :
-        sidePref === 'back'  ? true  :
-        showBack
+      // front -> false (Przód), back -> true (Tył), random -> LOSUJ przy każdym starcie sekwencji
+  const startBack =
+    sidePref === 'front' ? false :
+    sidePref === 'back'  ? true  :
+    Math.random() < 0.5
 
       startSideRef.current = startBack
       setShowBack(startBack) // upewnij UI
