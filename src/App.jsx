@@ -66,20 +66,17 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms))
 // Insert do Supabase z retry + backoff i auto-splitem przy 413
 async function insertWithRetry(rows, { maxRetries = 6, baseDelay = 400 } = {}) {
   let attempt = 0
-  // pusta paczka = nic nie rób
   if (!rows || !rows.length) return
   while (true) {
     try {
       const { error } = await supabase.from('flashcards').insert(rows)
       if (error) {
-        // 413 = payload too large → dzielimy paczkę na pół i wstawiamy osobno
         if ((error.status === 413 || /payload too large/i.test(error.message || '')) && rows.length > 1) {
           const mid = Math.floor(rows.length / 2)
           await insertWithRetry(rows.slice(0, mid), { maxRetries, baseDelay })
           await insertWithRetry(rows.slice(mid), { maxRetries, baseDelay })
           return
         }
-        // 429/5xx = retry z backoffem
         if (error.status === 429 || (error.status >= 500 && error.status <= 599)) {
           if (attempt < maxRetries) {
             const delay = baseDelay * Math.pow(2, attempt) + Math.floor(Math.random() * 200)
@@ -334,127 +331,108 @@ export default function App() {
     setCards([]); setFolders([])
   }
 
-  /* ===== CSV mapping ===== */
-  function rowToRecord(r, userId, folderId) {
-    const front = (r['Przód'] ?? r['Przod'] ?? r.front ?? '').toString().trim()
-    const back  = (r['Tył']   ?? r['Tyl']   ?? r.back  ?? '').toString().trim()
-    if (!front || !back) return null
-    const known = String(r.known || '').toLowerCase() === 'true'
-    return {
-      id: uuidv4(),
-      user_id: userId,
-      front,
-      back,
-      known,
-      folder_id: folderId
+  /* ===== Import CSV — delimiter ';', CHUNK=10, retry, backoff ===== */
+  async function handleCSVUpload(e) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    if (!importFolderId) {
+      setError('Wybierz folder dla importu.')
+      alert('Najpierw wybierz folder, do którego zaimportuję fiszki.')
+      e.target.value = ''
+      return
+    }
+
+    setLoading(true)
+    setError('')
+    setImportProgress({ running: true, done: 0 })
+
+    // Drobne paczki i krótka pauza — stabilnie przy 3000+ wierszy
+    let CHUNK = 10
+    let DELAY_MS = 200
+
+    let batch = []
+    let processed = 0
+    let parserAborted = false
+
+    const flush = async () => {
+      if (!batch.length) return
+      const toSend = batch
+      batch = []
+      await insertWithRetry(toSend, { maxRetries: 6, baseDelay: 400 })
+      processed += toSend.length
+      setImportProgress({ running: true, done: processed })
+      await sleep(DELAY_MS)
+    }
+
+    try {
+      await new Promise((resolve, reject) => {
+        Papa.parse(file, {
+          header: true,
+          skipEmptyLines: 'greedy',
+          worker: false,            // bez Workera – 100% kompatybilnie
+          delimiter: ';',           // WYMUSZAMY ŚREDNIK
+          // encoding: 'UTF-8',     // odkomentuj, jeśli znaki PL się sypią
+          fastMode: false,
+          step: (results, parser) => {
+            const raw = results.data || {}
+            const r = {}
+            for (const k of Object.keys(raw)) r[(k || '').trim()] = raw[k]
+
+            // oczekiwane nagłówki: „Przód”, „Tył” (front/back też zadziała)
+            const front = (r['Przód'] ?? r['Przod'] ?? r.front ?? '').toString().trim()
+            const back  = (r['Tył']   ?? r['Tyl']   ?? r.back  ?? '').toString().trim()
+            if (front && back) {
+              batch.push({
+                id: uuidv4(),
+                user_id: session.user.id,
+                front,
+                back,
+                known: String(r.known || '').toLowerCase() === 'true',
+                folder_id: importFolderId
+              })
+            }
+
+            if (batch.length >= CHUNK) {
+              parser.pause()
+              Promise.resolve().then(async () => {
+                try {
+                  await flush()
+                  parser.resume()
+                } catch (err) {
+                  parserAborted = true
+                  parser.abort()
+                  reject(err)
+                }
+              })
+            }
+          },
+          complete: async () => {
+            if (parserAborted) return
+            try {
+              await flush() // reszta < CHUNK
+              resolve(null)
+            } catch (err) {
+              reject(err)
+            }
+          },
+          error: (err) => reject(err)
+        })
+      })
+
+      await fetchCards()
+      alert(`Zaimportowano ${processed} fiszek do wybranego folderu.`)
+    } catch (err) {
+      console.error('CSV import error:', err)
+      setError(err.message || 'Nie udało się zaimportować pliku.')
+      alert('Import przerwany: ' + (err.message || 'nieznany błąd') +
+        '\n\nUpewnij się, że separator to średnik (;), a nagłówki to „Przód” i „Tył”. ' +
+        'W razie potrzeby zmniejsz CHUNK do 5 i zwiększ DELAY_MS do 400–700 ms.')
+    } finally {
+      setLoading(false)
+      setImportProgress({ running: false, done: processed })
+      e.target.value = ''
     }
   }
-
-  /* ===== Import CSV — strumieniowo, retry, backoff ===== */
-async function handleCSVUpload(e) {
-  const file = e.target.files?.[0]
-  if (!file) return
-  if (!importFolderId) {
-    setError('Wybierz folder dla importu.')
-    alert('Najpierw wybierz folder, do którego zaimportuję fiszki.')
-    e.target.value = ''
-    return
-  }
-
-  setLoading(true)
-  setError('')
-  setImportProgress({ running: true, done: 0 })
-
-  // Bezpieczne ustawienia dla środowisk z limitami:
-  let CHUNK = 50        // w razie potrzeby zmniejsz do 25
-  let DELAY_MS = 500    // w razie potrzeby zwiększ do 700
-
-  let batch = []
-  let processed = 0
-  let parserAborted = false
-
-  const flush = async () => {
-    if (!batch.length) return
-    const toSend = batch
-    batch = []
-    await insertWithRetry(toSend, { maxRetries: 6, baseDelay: 400 })
-    processed += toSend.length
-    setImportProgress({ running: true, done: processed })
-    await sleep(DELAY_MS)
-  }
-
-  try {
-    await new Promise((resolve, reject) => {
-      Papa.parse(file, {
-        header: true,
-        skipEmptyLines: 'greedy',
-        worker: true,            // zostaje, ale BEZ transformHeader
-        // Jeśli masz CSV ze średnikiem, odkomentuj:
-        // delimiter: ';',
-        // Jeśli problem z PL znakami, spróbuj:
-        // encoding: 'UTF-8',
-        step: (results, parser) => {
-          // >>> ZAMIENNIK transformHeader – przytnij nagłówki po stronie głównego wątku
-          const raw = results.data || {}
-          const r = {}
-          for (const k of Object.keys(raw)) {
-            r[(k || '').trim()] = raw[k]
-          }
-
-          // mapowanie nagłówków: Przód/Przod/front i Tył/Tyl/back
-          const front = (r['Przód'] ?? r['Przod'] ?? r.front ?? '').toString().trim()
-          const back  = (r['Tył']   ?? r['Tyl']   ?? r.back  ?? '').toString().trim()
-
-          if (front && back) {
-            batch.push({
-              id: uuidv4(),
-              user_id: session.user.id,
-              front,
-              back,
-              known: String(r.known || '').toLowerCase() === 'true',
-              folder_id: importFolderId
-            })
-          }
-
-          if (batch.length >= CHUNK) {
-            parser.pause()
-            ;(async () => {
-              try {
-                await flush()
-                parser.resume()
-              } catch (err) {
-                parserAborted = true
-                parser.abort()
-                reject(err)
-              }
-            })()
-          }
-        },
-        complete: async () => {
-          if (parserAborted) return
-          try {
-            await flush() // reszta < CHUNK
-            resolve(null)
-          } catch (err) {
-            reject(err)
-          }
-        },
-        error: (err) => reject(err)
-      })
-    })
-
-    await fetchCards()
-    alert(`Zaimportowano ${processed} fiszek do wybranego folderu.`)
-  } catch (err) {
-    console.error('CSV import error:', err)
-    setError(err.message || 'Nie udało się zaimportować pliku.')
-    alert('Import przerwany: ' + (err.message || 'nieznany błąd') + '\n\nSpróbuj ponownie: CHUNK=25 i DELAY_MS=700. Upewnij się też, że nagłówki to „Przód” i „Tył”.')
-  } finally {
-    setLoading(false)
-    setImportProgress({ running: false, done: processed })
-    e.target.value = ''
-  }
-}
 
   /* ===== Filtrowanie ===== */
   const foldersForSelect = useMemo(() => [{ id: 'ALL', name: 'Wszystkie' }, ...folders], [folders])
@@ -846,7 +824,7 @@ async function handleCSVUpload(e) {
                 </select>
 
                 <label
-                  className={`inline-flex items-center justify-center gap-2 px-4 h-10 rounded-xl border bg-white cursor-pointer hover:bg-gray-50 whitespace-nowrap shrink-0 w/full lg:w-auto ${!importFolderId ? 'opacity-60 cursor-not-allowed' : ''}`}
+                  className={`inline-flex items-center justify-center gap-2 px-4 h-10 rounded-xl border bg-white cursor-pointer hover:bg-gray-50 whitespace-nowrap shrink-0 w-full lg:w-auto ${!importFolderId ? 'opacity-60 cursor-not-allowed' : ''}`}
                   title={!importFolderId ? 'Najpierw wybierz folder' : 'Wybierz plik CSV'}
                 >
                   <span className="text-sm text-gray-700">Wybierz plik</span>
@@ -861,10 +839,9 @@ async function handleCSVUpload(e) {
               </div>
 
               <p className="text-xs text-gray-500 mt-2">
-                Oczekiwane nagłówki: <code>Przód</code>, <code>Tył</code>. (Kolumny <code>front</code>/<code>back</code> też zadziałają)
+                Oczekiwane nagłówki: <code>Przód</code>, <code>Tył</code>. Separator: średnik (<code>;</code>).
               </p>
 
-              {/* Pasek postępu importu */}
               {importProgress.running && (
                 <div className="mt-3">
                   <div className="text-xs text-gray-700 mb-1">
