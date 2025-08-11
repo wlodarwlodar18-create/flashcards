@@ -8,7 +8,7 @@ const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || ''
 const supabaseAnon = import.meta.env.VITE_SUPABASE_ANON_KEY || ''
 const supabase = createClient(supabaseUrl, supabaseAnon)
 
-/* ===== Utils ===== */
+/* Fisher–Yates shuffle */
 function shuffle(arr) {
   const a = [...arr]
   for (let i = a.length - 1; i > 0; i--) {
@@ -18,10 +18,14 @@ function shuffle(arr) {
   return a
 }
 
+/* Usuwanie diakrytyków */
 function stripDiacritics(s) {
-  return (s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+  return (s || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
 }
 
+/* Heurystyczne wykrywanie języka + PL bez ogonków */
 function detectLang(text) {
   const raw = (text || '').trim()
   if (!raw) return 'en-US'
@@ -37,6 +41,7 @@ function detectLang(text) {
   if (/[àèéìòù]/i.test(raw)) return 'it-IT'
   if (/[ãõçáéíóú]/i.test(raw)) return 'pt-PT'
   if (/[ğüşıçöİ]/i.test(raw)) return 'tr-TR'
+
   const s = stripDiacritics(raw).toLowerCase()
   const plStop = new Set([
     'i','w','na','do','nie','tak','jest','sa','byc','mam','masz','moze','mozna','ktory','ktora','ktore',
@@ -52,6 +57,7 @@ function detectLang(text) {
   return 'en-US'
 }
 
+/* Dobór głosu */
 function pickVoice(voices, lang) {
   if (!voices || !voices.length) return null
   const exact = voices.find(v => v.lang?.toLowerCase() === lang.toLowerCase())
@@ -61,46 +67,6 @@ function pickVoice(voices, lang) {
   return voices[0]
 }
 
-const sleep = (ms) => new Promise(r => setTimeout(r, ms))
-
-// Insert do Supabase z retry + backoff i auto-splitem przy 413
-async function insertWithRetry(rows, { maxRetries = 6, baseDelay = 400 } = {}) {
-  let attempt = 0
-  if (!rows || !rows.length) return
-  while (true) {
-    try {
-      const { error } = await supabase.from('flashcards').insert(rows)
-      if (error) {
-        if ((error.status === 413 || /payload too large/i.test(error.message || '')) && rows.length > 1) {
-          const mid = Math.floor(rows.length / 2)
-          await insertWithRetry(rows.slice(0, mid), { maxRetries, baseDelay })
-          await insertWithRetry(rows.slice(mid), { maxRetries, baseDelay })
-          return
-        }
-        if (error.status === 429 || (error.status >= 500 && error.status <= 599)) {
-          if (attempt < maxRetries) {
-            const delay = baseDelay * Math.pow(2, attempt) + Math.floor(Math.random() * 200)
-            attempt++
-            await sleep(delay)
-            continue
-          }
-        }
-        throw error
-      }
-      return
-    } catch (err) {
-      if (attempt < maxRetries) {
-        const delay = baseDelay * Math.pow(2, attempt) + Math.floor(Math.random() * 200)
-        attempt++
-        await sleep(delay)
-        continue
-      }
-      throw err
-    }
-  }
-}
-
-/* ===== App ===== */
 export default function App() {
   const [session, setSession] = useState(null)
 
@@ -118,7 +84,7 @@ export default function App() {
   const [shuffleOnLoad, setShuffleOnLoad] = useState(true)
   const [firstLoad, setFirstLoad] = useState(true)
 
-  // TTS języki
+  // TTS języki (UI na dole w „Dodaj fiszkę”)
   const [ttsFrontLang, setTtsFrontLang] = useState('auto')
   const [ttsBackLang, setTtsBackLang] = useState('auto')
 
@@ -136,9 +102,8 @@ export default function App() {
   // dodawanie folderu
   const [newFolderName, setNewFolderName] = useState('')
 
-  // import CSV
+  // import CSV (wymagany folder)
   const [importFolderId, setImportFolderId] = useState('')
-  const [importProgress, setImportProgress] = useState({ running: false, done: 0 })
 
   // nauka
   const [reviewIdx, setReviewIdx] = useState(0)
@@ -202,7 +167,7 @@ export default function App() {
     } catch {}
   }, [sidePref, showFilter, shuffleOnLoad, phaseA, phaseB, ttsFrontLang, ttsBackLang])
 
-  /* ===== API ===== */
+  // ===== API
   async function fetchFolders() {
     setError('')
     const { data, error } = await supabase
@@ -286,6 +251,7 @@ export default function App() {
     else setCards(prev => prev.filter(c => c.id !== id))
   }
 
+  // ——— Toggle „Zapamiętana” (odklikiwalny, bez restartu auto)
   async function toggleKnown(card) {
     const next = !card.known
     setCards(prev => prev.map(c => c.id === card.id ? { ...c, known: next } : c))
@@ -302,7 +268,23 @@ export default function App() {
     }
   }
 
-  /* ===== Logowanie ===== */
+  async function markKnown(card) {
+    if (card.known) return
+    setCards(prev => prev.map(c => c.id === card.id ? { ...c, known: true } : c))
+    setSuppressAutoTick(t => t + 1)
+    const { error } = await supabase
+      .from('flashcards')
+      .update({ known: true })
+      .eq('id', card.id)
+      .eq('user_id', session.user.id)
+    if (error) {
+      setError(error.message)
+      setCards(prev => prev.map(c => c.id === card.id ? { ...c, known: false } : c))
+      setSuppressAutoTick(t => t + 1)
+    }
+  }
+
+  // ===== Logowanie
   async function signInWithEmail(e) {
     e.preventDefault()
     setLoading(true); setError('')
@@ -331,7 +313,19 @@ export default function App() {
     setCards([]); setFolders([])
   }
 
-  /* ===== Import CSV — autowykrywanie separatora, CHUNK=10 ===== */
+  // ===== CSV
+  function parseCSV(file) {
+    return new Promise((resolve, reject) => {
+      Papa.parse(file, {
+        header: true,
+        skipEmptyLines: true,
+        complete: (results) => resolve(results.data),
+        error: (err) => reject(err)
+      })
+    })
+  }
+
+  // Import CSV — wymagany folder
   async function handleCSVUpload(e) {
     const file = e.target.files?.[0]
     if (!file) return
@@ -341,131 +335,45 @@ export default function App() {
       e.target.value = ''
       return
     }
-
-    setLoading(true)
-    setError('')
-    setImportProgress({ running: true, done: 0 })
-
-    const CHUNK = 10
-    const DELAY_MS = 200
-    let processed = 0
-
-    const flushFactory = () => {
-      let batch = []
-      return {
-        push(row) { batch.push(row) },
-        size() { return batch.length },
-        async flush() {
-          if (!batch.length) return
-          const toSend = batch
-          batch = []
-          await insertWithRetry(toSend, { maxRetries: 6, baseDelay: 400 })
-          processed += toSend.length
-          setImportProgress({ running: true, done: processed })
-          await sleep(DELAY_MS)
-        }
-      }
-    }
-
-    const runParse = (delimiterOrAuto) => new Promise((resolve, reject) => {
-      const flusher = flushFactory()
-      let parserAborted = false
-
-      const stepHandler = (results, parser) => {
-        const raw = results.data || {}
-        const r = {}
-        for (const k of Object.keys(raw)) r[(k || '').trim()] = raw[k]
-
-        const front = (r['Przód'] ?? r['Przod'] ?? r['front'] ?? r['Front'] ?? '').toString().trim()
-        const back  = (r['Tył']   ?? r['Tyl']   ?? r['back']  ?? r['Back']  ?? '').toString().trim()
-
-        if (front && back) {
-          flusher.push({
-            id: uuidv4(),
-            user_id: session.user.id,
-            front,
-            back,
-            known: String(r.known || '').toLowerCase() === 'true',
-            folder_id: importFolderId
-          })
-        }
-
-        if (flusher.size() >= CHUNK) {
-          parser.pause()
-          Promise.resolve().then(async () => {
-            try {
-              await flusher.flush()
-              parser.resume()
-            } catch (err) {
-              parserAborted = true
-              parser.abort()
-              reject(err)
-            }
-          })
-        }
-      }
-
-      const baseConfig = {
-        header: true,
-        skipEmptyLines: 'greedy',
-        worker: false,
-        fastMode: false,
-        step: stepHandler,
-        complete: async () => {
-          if (parserAborted) return
-          try {
-            await flusher.flush()
-            resolve(null)
-          } catch (err) {
-            reject(err)
-          }
-        },
-        error: (err) => reject(err)
-      }
-
-      if (delimiterOrAuto === 'auto') {
-        Papa.parse(file, baseConfig) // auto-detect
-      } else {
-        Papa.parse(file, { ...baseConfig, delimiter: delimiterOrAuto })
-      }
-    })
-
+    setLoading(true); setError('')
     try {
-      const tried = []
-      const tryOrder = ['auto', ';', ',', '\t']
+      const rows = await parseCSV(file) // oczekuje: Przód, Tył (lub front, back)
+      const cleaned = rows
+        .map(r => {
+          const front = (r['Przód'] ?? r['Przod'] ?? r.front ?? '').toString().trim()
+          const back  = (r['Tył']   ?? r['Tyl']   ?? r.back  ?? '').toString().trim()
+          const known = String(r.known || '').toLowerCase() === 'true'
+          return { front, back, known }
+        })
+        .filter(r => r.front && r.back)
+      if (!cleaned.length) throw new Error('Plik nie zawiera poprawnych wierszy (kolumny „Przód/Tył”).')
 
-      for (const delim of tryOrder) {
-        tried.push(delim === 'auto' ? 'auto' : JSON.stringify(delim))
-        const prev = processed
-        await runParse(delim)
-        if (processed > prev) break
+      const payload = cleaned.map(r => ({
+        id: uuidv4(),
+        user_id: session.user.id,
+        front: r.front,
+        back: r.back,
+        known: r.known,
+        folder_id: importFolderId
+      }))
+
+      const chunkSize = 500
+      for (let i = 0; i < payload.length; i += chunkSize) {
+        const chunk = payload.slice(i, i + chunkSize)
+        const { error } = await supabase.from('flashcards').insert(chunk)
+        if (error) throw error
       }
-
-      if (processed === 0) {
-        throw new Error(
-          'Nie rozpoznano żadnych rekordów. Sprawdź: nagłówki „Przód”/„Tył” (lub front/back) i separator (przecinek/średnik/tab).'
-        )
-      }
-
       await fetchCards()
-      alert(`Zaimportowano ${processed} fiszek do wybranego folderu.`)
+      alert(`Zaimportowano ${payload.length} fiszek do wybranego folderu.`)
     } catch (err) {
-      console.error('CSV import error:', err)
-      setError(err.message || 'Nie udało się zaimportować pliku.')
-      alert(
-        'Import przerwany: ' + (err.message || 'nieznany błąd') +
-        '\n\nWskazówki:\n' +
-        '• Upewnij się, że nagłówki to „Przód” i „Tył” (lub front/back).\n' +
-        '• Jeśli to Excel PL – zwykle separator to średnik (;). Google Sheets – zwykle przecinek (,).\n'
-      )
+      setError(err.message)
     } finally {
       setLoading(false)
-      setImportProgress({ running: false, done: processed })
       e.target.value = ''
     }
   }
 
-  /* ===== Filtrowanie ===== */
+  // ===== Filtrowanie
   const foldersForSelect = useMemo(() => [{ id: 'ALL', name: 'Wszystkie' }, ...folders], [folders])
 
   const filtered = useMemo(() => {
@@ -478,11 +386,10 @@ export default function App() {
     return arr
   }, [cards, activeFolderId, showFilter, q])
 
-  /* ===== Tryb nauki (karta + auto) ===== */
+  // ===== Tryb nauki — karta + Tryb auto
   function Review({ autoMode, phaseA, phaseB, ttsFrontLang, ttsBackLang, suppressAutoTick }) {
     const has = filtered.length > 0
     const safeLen = Math.max(1, filtered.length)
-    theCard:
     const card = filtered[reviewIdx % safeLen]
     const [showBack, setShowBack] = useState(false)
 
@@ -493,6 +400,7 @@ export default function App() {
     const runIdRef = useRef(0)
     const lastSuppressRef = useRef(suppressAutoTick)
 
+    // startowa strona wg preferencji przy każdej nowej karcie
     useEffect(() => {
       if (!has) return
       if (sidePref === 'front') setShowBack(false)
@@ -539,12 +447,16 @@ export default function App() {
       setReviewIdx(i => (i + 1) % filtered.length)
     }
 
+    // AUTO: czytaj wg „Najpierw” → czekaj (Przód) → flip + czytaj → czekaj (Tył) → następna
     useEffect(() => {
       if (!autoMode || !has) return
+
+      // jeżeli przyczyną rerenderu był toggle „Zapamiętana”, pomiń ten cykl
       if (lastSuppressRef.current !== suppressAutoTick) {
         lastSuppressRef.current = suppressAutoTick
         return
       }
+
       stopAll()
       const myRunId = ++runIdRef.current
 
@@ -560,6 +472,7 @@ export default function App() {
 
       timerA.current = setTimeout(() => {
         if (runIdRef.current !== myRunId) return
+
         const flippedBack = !startBack
         setShowBack(flippedBack)
         const textB = flippedBack ? card.back : card.front
@@ -604,6 +517,7 @@ export default function App() {
           </div>
         </div>
 
+        {/* Pasek akcji – responsywny */}
         <div className="mt-3 sm:mt-4 grid grid-cols-2 sm:flex sm:flex-wrap gap-2 sm:gap-3 items-center">
           <button
             ref={nextBtnRef}
@@ -636,6 +550,7 @@ export default function App() {
           >
             {autoMode ? 'Stop (Tryb auto)' : 'Tryb auto'}
           </button>
+          {/* ZAWSZE „Zapamiętane” — tylko kolor się zmienia */}
           <button
             className={`px-3 py-2 h-10 rounded-xl ${card.known ? 'bg-emerald-600 text-white' : 'bg-gray-200 text-black hover:bg-gray-300'}`}
             onClick={() => toggleKnown(card)}
@@ -645,6 +560,7 @@ export default function App() {
           </button>
         </div>
 
+        {/* Suwaki czasu — równy zakres 1–15 s */}
         <div className="mt-4 grid sm:grid-cols-2 gap-4 bg-white/60 rounded-xl p-3 border">
           <div>
             <label className="text-sm font-medium">Przód (sekundy)</label>
@@ -684,7 +600,7 @@ export default function App() {
           <h1 className="text-2xl font-bold">Fiszki – logowanie</h1>
           <p className="text-sm text-gray-600 mt-2">Podaj e-mail (magic link) albo zaloguj hasłem właściciela.</p>
 
-        {/* Magic link */}
+          {/* Magic link */}
           <form onSubmit={signInWithEmail} className="mt-4 space-y-3">
             <input type="email" required placeholder="twoj@email.pl" value={email} onChange={(e) => setEmail(e.target.value)} className="w-full border rounded-xl px-3 py-2 h-10" />
             <button disabled={loading} className="w-full rounded-xl px-4 h-10 bg-black text-white disabled:opacity-50">
@@ -692,7 +608,7 @@ export default function App() {
             </button>
           </form>
 
-        {/* Owner password */}
+          {/* Owner password */}
           <hr className="my-4" />
           <p className="text-sm font-semibold">Logowanie właściciela (e-mail + hasło)</p>
           <form onSubmit={signInWithPassword} className="mt-2 space-y-2">
@@ -794,15 +710,13 @@ export default function App() {
                 >
                   {f.name}
                 </button>
-                <div className="flex items-center gap-2">
-                  <button
-                    className={`px-2 py-1 h-9 rounded-lg border ${activeFolderId===f.id ? 'bg-white/10' : 'hover:bg-white'}`}
-                    onClick={() => deleteFolder(f.id, f.name)}
-                    title="Usuń folder (fiszki w środku też zostaną usunięte)"
-                  >
-                    Usuń
-                  </button>
-                </div>
+                <button
+                  className={`ml-2 px-2 py-1 h-9 rounded-lg border ${activeFolderId===f.id ? 'bg-white/10' : 'hover:bg-white'}`}
+                  onClick={() => deleteFolder(f.id, f.name)}
+                  title="Usuń folder"
+                >
+                  Usuń
+                </button>
               </li>
             ))}
           </ul>
@@ -819,6 +733,7 @@ export default function App() {
                 value={newFront}
                 onChange={e => setNewFront(e.target.value)}
               />
+              {/* Tył jako input text (bez strzałek / bez zmiany rozmiaru) */}
               <input
                 type="text"
                 className="w-full border rounded-xl px-3 h-10"
@@ -843,6 +758,7 @@ export default function App() {
             <div className="mt-4">
               <label className="text-sm font-medium">Import CSV (Przód, Tył)</label>
 
+              {/* Pasek wyboru folderu + przycisk pliku */}
               <div className="mt-2 flex flex-col lg:flex-row gap-2 lg:items-center">
                 <select
                   className="border rounded-xl px-3 h-10 w-full lg:w-auto"
@@ -855,6 +771,7 @@ export default function App() {
                   {folders.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
                 </select>
 
+                {/* Stylizowany przycisk do wyboru pliku */}
                 <label
                   className={`inline-flex items-center justify-center gap-2 px-4 h-10 rounded-xl border bg-white cursor-pointer hover:bg-gray-50 whitespace-nowrap shrink-0 w-full lg:w-auto ${!importFolderId ? 'opacity-60 cursor-not-allowed' : ''}`}
                   title={!importFolderId ? 'Najpierw wybierz folder' : 'Wybierz plik CSV'}
@@ -870,23 +787,16 @@ export default function App() {
                 </label>
               </div>
 
+              {/* INFO pod paskiem wyboru */}
               <p className="text-xs text-gray-500 mt-2">
-                Oczekiwane nagłówki: <code>Przód</code>, <code>Tył</code>. Separator: przecinek/średnik — wykrywane automatycznie.
+                Oczekiwane nagłówki: <code>Przód</code>, <code>Tył</code>.
               </p>
-
-              {importProgress.running && (
-                <div className="mt-3">
-                  <div className="text-xs text-gray-700 mb-1">
-                    Zaimportowano: {importProgress.done} rekordów…
-                  </div>
-                  <div className="w-full h-2 bg-gray-200 rounded overflow-hidden">
-                    <div className="h-2 bg-emerald-500 animate-pulse w-1/2" />
-                  </div>
-                </div>
+              {!importFolderId && (
+                <p className="text-xs text-red-600 mt-1">Wybór folderu jest wymagany, aby wczytać plik.</p>
               )}
             </div>
 
-            {/* Języki czytania */}
+            {/* Języki czytania — na dole sekcji */}
             <div className="mt-5 bg-white rounded-xl border p-3">
               <p className="text-sm font-medium mb-2">Czytanie na głos — język</p>
               <div className="grid sm:grid-cols-2 gap-3">
@@ -896,6 +806,7 @@ export default function App() {
                     className="border rounded-lg px-2 py-1 h-10"
                     value={ttsFrontLang}
                     onChange={(e)=>setTtsFrontLang(e.target.value)}
+                    title="Wymuś język czytania dla przodu"
                   >
                     <option value="auto">Auto</option>
                     <option value="pl-PL">Polski (pl-PL)</option>
@@ -915,6 +826,7 @@ export default function App() {
                     className="border rounded-lg px-2 py-1 h-10"
                     value={ttsBackLang}
                     onChange={(e)=>setTtsBackLang(e.target.value)}
+                    title="Wymuś język czytania dla tyłu"
                   >
                     <option value="auto">Auto</option>
                     <option value="pl-PL">Polski (pl-PL)</option>
