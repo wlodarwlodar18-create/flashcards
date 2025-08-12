@@ -10,11 +10,11 @@ const supabaseAnon = import.meta.env.VITE_SUPABASE_ANON_KEY || ''
 const ownerEmailEnv = import.meta.env.VITE_OWNER_EMAIL || ''
 const supabase = createClient(supabaseUrl, supabaseAnon)
 
-/* Metered (TURN/STUN) — najlepiej podać w env */
+/* Metered (TURN/STUN) */
 const METERED_DOMAIN =
-  import.meta.env.VITE_METERED_DOMAIN || 'kw-24.metered.live'   // <- Twoja domena z metered
+  import.meta.env.VITE_METERED_DOMAIN || 'kw-24.metered.live'
 const METERED_API_KEY =
-  import.meta.env.VITE_METERED_API_KEY || 'PASTE_YOUR_API_KEY'  // <- Twój API Key z metered
+  import.meta.env.VITE_METERED_API_KEY || 'PASTE_YOUR_API_KEY'
 
 /* ======================= UTILS ======================= */
 const sleep = (ms) => new Promise(r => setTimeout(r, ms))
@@ -100,7 +100,7 @@ export default function App() {
   const [phaseB, setPhaseB] = useState(3) // tył
   const [suppressAutoTick, setSuppressAutoTick] = useState(0)
 
-  /* init auth + lokalne ustawienia */
+  /* init */
   useEffect(() => {
     const init = async () => {
       const { data: { session } } = await supabase.auth.getSession()
@@ -448,7 +448,7 @@ export default function App() {
               </select>
             </div>
 
-            <div className="text-sm bg-white rounded-xl shadow px-3 py-2 flex items-center justify-between gap-2">
+            <div className="text-sm bg-white rounded-2xl shadow px-3 py-2 flex items-center justify-between gap-2">
               <label className="flex items-center gap-2 cursor-pointer">
                 <input type="checkbox" checked={shuffleOnLoad} onChange={(e)=>setShuffleOnLoad(e.target.checked)} />
                 <span className="whitespace-nowrap">Losuj przy starcie</span>
@@ -461,7 +461,7 @@ export default function App() {
             <div className="text-sm bg-white rounded-xl shadow px-3 py-2 flex items-center gap-2 sm:col-span-2 lg:col-span-1">
               <span className="whitespace-nowrap">Folder:</span>
               <select className="border rounded-lg px-2 py-1 h-10 w-full" value={activeFolderId} onChange={(e)=>setActiveFolderId(e.target.value)}>
-                {foldersForSelect.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
+                {[{ id:'ALL', name:'Wszystkie' }, ...folders].map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
               </select>
             </div>
 
@@ -469,7 +469,7 @@ export default function App() {
               <span className="text-gray-600 truncate">{session.user.email}</span>
               <div className="flex items-center gap-2">
                 {ownerEmailEnv && session.user.email === ownerEmailEnv && (
-                  <button onClick={()=>setPage('webrtc')} className="px-3 py-2 h-10 rounded-xl bg-purple-600 text-white hover:bg-purple-500" title="Tajny podgląd kamery">
+                  <button onClick={()=>setPage('webrtc')} className="px-3 py-2 h-10 rounded-xl bg-purple-600 text-white hover:bg-purple-500">
                     Kamerka
                   </button>
                 )}
@@ -523,7 +523,7 @@ export default function App() {
                   <input type="file" accept=".csv" onChange={handleCSVUpload} className="hidden" disabled={!importFolderId}/>
                 </label>
               </div>
-              <p className="text-xs text-gray-500 mt-2">Oczekiwane nagłówki: <code>Przód</code>, <code>Tył</code>. Separator wykrywany automatycznie.</p>
+              <p className="text-xs text-gray-500 mt-2">Nagłówki: <code>Przód</code>, <code>Tył</code>. Separator wykrywany automatycznie.</p>
               {importProgress.running && (
                 <div className="mt-3">
                   <div className="text-xs text-gray-700 mb-1">Zaimportowano: {importProgress.done}…</div>
@@ -570,15 +570,15 @@ export default function App() {
   )
 }
 
-/* ======================= KAMERKA (1 okno, Metered) ======================= */
+/* ======================= KAMERKA (1 okno, auto sygnalizacja) ======================= */
 function SecretWebRTCPage({ onBack }) {
   const videoRef = useRef(null)
   const pcRef = useRef(null)
   const localStreamRef = useRef(null)
+  const channelRef = useRef(null)
 
+  const [room, setRoom] = useState('')
   const [role, setRole] = useState('idle') // 'idle' | 'caster' | 'viewer'
-  const [offer, setOffer] = useState('')
-  const [answer, setAnswer] = useState('')
   const [useBackCam, setUseBackCam] = useState(true)
   const [pcState, setPcState] = useState('new')
   const [needsManualPlay, setNeedsManualPlay] = useState(false)
@@ -586,19 +586,14 @@ function SecretWebRTCPage({ onBack }) {
   useEffect(()=>()=>stopAll(),[])
 
   async function fetchIceServers() {
-    // Pobiera dynamiczne poświadczenia TURN/STUN z Metered
     if (!METERED_DOMAIN || !METERED_API_KEY) {
-      console.warn('Brak METERED_DOMAIN lub METERED_API_KEY – uzupełnij w env.')
-      return [
-        { urls: 'stun:stun.l.google.com:19302' },
-      ]
+      // fallback (działa w LAN)
+      return [{ urls: 'stun:stun.l.google.com:19302' }]
     }
     const url = `https://${METERED_DOMAIN}/api/v1/turn/credentials?apiKey=${encodeURIComponent(METERED_API_KEY)}`
     const res = await fetch(url)
     if (!res.ok) throw new Error('Nie udało się pobrać iceServers z Metered.')
-    const json = await res.json()
-    // Metered zwraca tablicę obiektów zgodnych z RTCPeerConnection
-    return json
+    return await res.json()
   }
 
   async function makePC() {
@@ -613,10 +608,51 @@ function SecretWebRTCPage({ onBack }) {
     return { video, audio: false }
   }
 
+  function ensureChannel(roomName) {
+    if (channelRef.current) return channelRef.current
+    const ch = supabase.channel(`webrtc:${roomName}`, {
+      config: { broadcast: { self: false } }
+    })
+    ch.subscribe((status) => {
+      if (status === 'SUBSCRIBED') {
+        // ok
+      }
+    })
+    ch.on('broadcast', { event: 'webrtc' }, async ({ payload }) => {
+      const pc = pcRef.current
+      if (!pc) return
+      try {
+        if (payload.type === 'offer' && role === 'viewer') {
+          await pc.setRemoteDescription(payload.sdp)
+          const answer = await pc.createAnswer()
+          await pc.setLocalDescription(answer)
+          ch.send({ type: 'broadcast', event: 'webrtc', payload: { type: 'answer', sdp: pc.localDescription } })
+        } else if (payload.type === 'answer' && role === 'caster') {
+          await pc.setRemoteDescription(payload.sdp)
+        } else if (payload.type === 'ice') {
+          await pc.addIceCandidate(payload.candidate)
+        }
+      } catch (e) {
+        console.error('RTC signal error', e)
+      }
+    })
+    channelRef.current = ch
+    return ch
+  }
+
   async function startCaster() {
+    if (!room.trim()) { alert('Podaj nazwę pokoju'); return }
     setRole('caster')
     const pc = await makePC()
     pcRef.current = pc
+
+    const ch = ensureChannel(room.trim())
+
+    pc.onicecandidate = (e) => {
+      if (e.candidate) {
+        ch.send({ type: 'broadcast', event: 'webrtc', payload: { type: 'ice', candidate: e.candidate } })
+      }
+    }
 
     const stream = await navigator.mediaDevices.getUserMedia(camConstraints())
     localStreamRef.current = stream
@@ -630,19 +666,24 @@ function SecretWebRTCPage({ onBack }) {
       try { await videoRef.current.play() } catch {}
     }
 
-    pc.onicecandidate = (e) => {
-      if (e.candidate) return
-      setOffer(JSON.stringify(pc.localDescription))
-    }
-
-    const offerDesc = await pc.createOffer()
-    await pc.setLocalDescription(offerDesc)
+    const offer = await pc.createOffer()
+    await pc.setLocalDescription(offer)
+    ch.send({ type: 'broadcast', event: 'webrtc', payload: { type: 'offer', sdp: pc.localDescription } })
   }
 
   async function startViewer() {
+    if (!room.trim()) { alert('Podaj nazwę pokoju'); return }
     setRole('viewer')
     const pc = await makePC()
     pcRef.current = pc
+
+    const ch = ensureChannel(room.trim())
+
+    pc.onicecandidate = (e) => {
+      if (e.candidate) {
+        ch.send({ type: 'broadcast', event: 'webrtc', payload: { type: 'ice', candidate: e.candidate } })
+      }
+    }
 
     pc.addTransceiver('video', { direction: 'recvonly' })
     pc.ontrack = async (e) => {
@@ -653,28 +694,12 @@ function SecretWebRTCPage({ onBack }) {
       try { await videoRef.current.play(); setNeedsManualPlay(false) }
       catch { setNeedsManualPlay(true) }
     }
-
-    const offerDesc = JSON.parse(offer || '{}')
-    await pc.setRemoteDescription(offerDesc)
-
-    pc.onicecandidate = (e) => {
-      if (e.candidate) return
-      setAnswer(JSON.stringify(pc.localDescription))
-    }
-
-    const answerDesc = await pc.createAnswer()
-    await pc.setLocalDescription(answerDesc)
-  }
-
-  async function setAnswerOnSender() {
-    const pc = pcRef.current
-    const ans = JSON.parse(answer || '{}')
-    await pc.setRemoteDescription(ans)
+    // Viewer czeka na "offer" z telefonu, reszta idzie w on('broadcast'...)
   }
 
   async function switchCamera() {
-    if (role !== 'caster') { setUseBackCam(v => !v); return }
-    setUseBackCam(v => !v)
+    if (role !== 'caster') { setUseBackCam(v=>!v); return }
+    setUseBackCam(v=>!v)
     try {
       const newStream = await navigator.mediaDevices.getUserMedia(camConstraints())
       const pc = pcRef.current
@@ -697,8 +722,9 @@ function SecretWebRTCPage({ onBack }) {
   function stopAll() {
     try { pcRef.current?.close?.() } catch {}
     try { localStreamRef.current?.getTracks()?.forEach(t=>t.stop()) } catch {}
-    pcRef.current = null; localStreamRef.current = null
-    setRole('idle'); setOffer(''); setAnswer(''); setNeedsManualPlay(false)
+    try { channelRef.current?.unsubscribe?.() } catch {}
+    pcRef.current = null; localStreamRef.current = null; channelRef.current = null
+    setRole('idle'); setNeedsManualPlay(false); setPcState('new')
   }
 
   async function manualPlay() {
@@ -709,23 +735,20 @@ function SecretWebRTCPage({ onBack }) {
     <main className="min-h-screen bg-gradient-to-b from-slate-50 to-slate-100 p-4">
       <div className="max-w-2xl mx-auto">
         <header className="flex items-center justify-between">
-          <h1 className="text-2xl font-bold">Kamerka (1 okno, Metered)</h1>
+          <h1 className="text-2xl font-bold">Kamerka (1 okno, auto-połączenie)</h1>
           <button onClick={()=>{ stopAll(); onBack(); }} className="px-3 py-2 rounded-xl bg-gray-200 hover:bg-gray-300">← Wróć</button>
         </header>
 
         <section className="mt-4 bg-white rounded-2xl shadow p-4">
-          <p className="text-sm text-gray-600">
-            Instrukcja:
-          </p>
-          <ol className="list-decimal ml-5 text-sm text-gray-700 mt-2 space-y-1">
-            <li><b>Telefon:</b> „Start kamera (telefon)”, skopiuj pole <i>Offer</i>.</li>
-            <li><b>Komputer:</b> wklej <i>Offer</i>, kliknij „Podgląd (komputer)”, skopiuj <i>Answer</i>.</li>
-            <li><b>Telefon:</b> wklej <i>Answer</i> i kliknij „Ustaw odpowiedź (telefon)”.</li>
-          </ol>
-
-          <div className="mt-3 flex flex-wrap items-center gap-2">
+          <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
+            <input
+              className="border rounded-xl px-3 h-10 flex-1"
+              placeholder="Nazwa pokoju (np. pokoj1)"
+              value={room}
+              onChange={(e)=>setRoom(e.target.value)}
+            />
             <button className={`px-4 h-10 rounded-xl ${role==='caster'?'bg-purple-600 text-white':'bg-purple-100 hover:bg-purple-200'}`} onClick={startCaster}>
-              Start kamera (telefon)
+              Start (telefon)
             </button>
             <button className={`px-4 h-10 rounded-xl ${role==='viewer'?'bg-green-600 text-white':'bg-green-100 hover:bg-green-200'}`} onClick={startViewer}>
               Podgląd (komputer)
@@ -735,7 +758,6 @@ function SecretWebRTCPage({ onBack }) {
               Przełącz kamera: {useBackCam?'Tył':'Przód'}
             </button>
             <span className="text-xs text-gray-600">Stan: <b>{pcState}</b></span>
-            {!METERED_API_KEY && <span className="text-xs text-amber-700 bg-amber-100 px-2 py-1 rounded">Brak VITE_METERED_API_KEY</span>}
           </div>
 
           <div className="mt-4 relative">
@@ -747,28 +769,9 @@ function SecretWebRTCPage({ onBack }) {
             )}
           </div>
 
-          <div className="grid md:grid-cols-2 gap-3 mt-4">
-            <div>
-              <label className="text-sm font-medium">Offer (od telefonu → wklej na komputerze)</label>
-              <textarea className="w-full border rounded-xl p-2 mt-1 min-h-[120px]" value={offer} onChange={e=>setOffer(e.target.value)} />
-            </div>
-            <div>
-              <label className="text-sm font-medium">Answer (od komputera → wklej na telefonie)</label>
-              <textarea className="w-full border rounded-xl p-2 mt-1 min-h-[120px]" value={answer} onChange={e=>setAnswer(e.target.value)} />
-            </div>
-          </div>
-
-          {role==='caster' && (
-            <div className="mt-3">
-              <button className="px-3 py-2 rounded-xl bg-emerald-600 text-white hover:bg-emerald-500" onClick={setAnswerOnSender}>
-                Ustaw odpowiedź (telefon)
-              </button>
-            </div>
-          )}
-
           <p className="text-xs text-gray-500 mt-4">
-            Metered dostarcza dynamiczne dane TURN/STUN. Dzięki temu obraz działa również między różnymi sieciami (za NAT).
-            Gdy desktop zablokuje autoplay, pojawi się przycisk „Odtwórz wideo”.
+            Połącz urządzenia wpisując tę samą nazwę pokoju. Supabase Realtime wymienia sygnały (Offer/Answer/ICE) automatycznie.
+            Metered dostarcza TURN/STUN, więc połączenie działa także między różnymi sieciami.
           </p>
         </section>
       </div>
