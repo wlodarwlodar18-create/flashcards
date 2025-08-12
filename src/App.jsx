@@ -354,7 +354,7 @@ export default function App() {
     return (
       <div className="mt-4">
         <div
-          className={`w-full rounded-2xl shadow p-5 min-h-[150px] flex items-center justify-center text-center border relative ${cardBg}`}
+          className={`w-full rounded-2xl shadow p-5 min-h[150px] min-h-[150px] flex items-center justify-center text-center border relative ${cardBg}`}
           onClick={() => setShowBack(s=>!s)}
           title="Kliknij, aby przełączyć front/back"
         >
@@ -399,7 +399,7 @@ export default function App() {
           <h1 className="text-2xl font-bold">Fiszki – logowanie</h1>
           <p className="text-sm text-gray-600 mt-2">Podaj e-mail (magic link) albo zaloguj hasłem właściciela.</p>
 
-          <form onSubmit={signInWithEmail} className="mt-4 space-y-3">
+        <form onSubmit={signInWithEmail} className="mt-4 space-y-3">
             <input type="email" required placeholder="twoj@email.pl" value={email} onChange={(e)=>setEmail(e.target.value)} className="w-full border rounded-xl px-3 py-2 h-10"/>
             <button disabled={loading} className="w-full rounded-xl px-4 h-10 bg-black text-white disabled:opacity-50">{loading?'Wysyłanie…':'Wyślij link'}</button>
           </form>
@@ -570,13 +570,14 @@ export default function App() {
   )
 }
 
-/* ======================= KAMERKA (1 okno, auto sygnalizacja + ping) ======================= */
+/* ======================= KAMERKA (auto-połączenie + ping, H.264 prefer) ======================= */
 function SecretWebRTCPage({ onBack }) {
   const videoRef = useRef(null)
   const pcRef = useRef(null)
   const localStreamRef = useRef(null)
   const channelRef = useRef(null)
-  const lastOfferRef = useRef(null) // zapamiętujemy offer, by móc go dosyłać na żądanie
+  const lastOfferRef = useRef(null)
+
   const [room, setRoom] = useState('')
   const [role, setRole] = useState('idle') // 'idle' | 'caster' | 'viewer'
   const [useBackCam, setUseBackCam] = useState(true)
@@ -616,6 +617,22 @@ function SecretWebRTCPage({ onBack }) {
     return pc
   }
 
+  async function preferH264(pc) {
+    try {
+      const senders = pc.getSenders().filter(s => s.track && s.track.kind === 'video')
+      for (const s of senders) {
+        const params = s.getParameters() || {}
+        const codecs = RTCRtpSender.getCapabilities('video')?.codecs || []
+        const h264 = codecs.filter(c => /H264/i.test(c.mimeType))
+        const rest = codecs.filter(c => !/H264/i.test(c.mimeType))
+        if (h264.length) {
+          params.codecs = [...h264, ...rest]
+          await s.setParameters(params)
+        }
+      }
+    } catch {}
+  }
+
   function camConstraints() {
     const video = useBackCam ? { facingMode: { ideal: 'environment' } } : { facingMode: { ideal: 'user' } }
     return { video, audio: false }
@@ -633,7 +650,6 @@ function SecretWebRTCPage({ onBack }) {
       try {
         switch (payload.type) {
           case 'ping': {
-            // Viewer prosi o ofertę → telefon odsyła ostatnią/aktualną
             if (role === 'caster' && lastOfferRef.current) {
               log('RX ping → TX offer')
               ch.send({ type: 'broadcast', event: 'webrtc', payload: { type: 'offer', sdp: lastOfferRef.current } })
@@ -686,11 +702,16 @@ function SecretWebRTCPage({ onBack }) {
       }
     }
 
+    // TYLKO addTrack — bez addTransceiver, by nie dublować m-line
     const stream = await navigator.mediaDevices.getUserMedia(camConstraints())
     localStreamRef.current = stream
-    stream.getTracks().forEach(t => pc.addTrack(t, stream))
-    pc.addTransceiver('video', { direction: 'sendrecv' })
+    const videoTrack = stream.getVideoTracks()[0]
+    pc.addTrack(videoTrack, stream)
 
+    // Preferuj H.264 (Safari/relay)
+    await preferH264(pc)
+
+    // Podgląd własny
     if (videoRef.current) {
       videoRef.current.srcObject = stream
       videoRef.current.muted = true
@@ -698,7 +719,7 @@ function SecretWebRTCPage({ onBack }) {
       try { await videoRef.current.play() } catch {}
     }
 
-    const offer = await pc.createOffer()
+    const offer = await pc.createOffer({ offerToReceiveVideo: false })
     await pc.setLocalDescription(offer)
     lastOfferRef.current = pc.localDescription
     ch.send({ type: 'broadcast', event: 'webrtc', payload: { type: 'offer', sdp: pc.localDescription } })
@@ -719,7 +740,7 @@ function SecretWebRTCPage({ onBack }) {
       }
     }
 
-    pc.addTransceiver('video', { direction: 'recvonly' })
+    // Viewer: tylko odbieramy — ontrack ustawi video
     pc.ontrack = async (e) => {
       const stream = e.streams[0]
       if (!videoRef.current) return
@@ -730,7 +751,7 @@ function SecretWebRTCPage({ onBack }) {
       log('ontrack stream')
     }
 
-    // Poproś caster o aktualny offer (jeśli dołączyłeś później)
+    // Poproś o aktualny offer (dołączenie później)
     ch.send({ type: 'broadcast', event: 'webrtc', payload: { type: 'ping' } })
     log('TX ping (request offer)')
   }
@@ -826,4 +847,3 @@ function SecretWebRTCPage({ onBack }) {
     </main>
   )
 }
-
