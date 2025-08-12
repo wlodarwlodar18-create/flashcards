@@ -899,37 +899,38 @@ export default function App() {
 }
 
 /* ===== Tajna strona WebRTC ===== */
+// ===== Tajna strona WebRTC — WERSJA PROSTA: jedno wideo =====
 function SecretWebRTCPage({ onBack }) {
   const [roomId, setRoomId] = useState('');
-  const [status, setStatus] = useState('idle'); // 'idle' | 'casting' | 'viewing'
+  const [role, setRole] = useState('idle'); // 'idle' | 'caster' | 'viewer'
   const [useBackCam, setUseBackCam] = useState(true);
   const [needsManualPlay, setNeedsManualPlay] = useState(false);
   const [pcState, setPcState] = useState('new');
 
-  const localVideoRef = useRef(null);
-  const remoteVideoRef = useRef(null);
+  const videoRef = useRef(null);         // JEDEN element <video>
   const pcRef = useRef(null);
   const channelRef = useRef(null);
   const localStreamRef = useRef(null);
 
-  const turnUrl = import.meta.env.VITE_TURN_URL || '';
+  // TURN (opcjonalnie)
+  const turnUrl  = import.meta.env.VITE_TURN_URL || '';
   const turnUser = import.meta.env.VITE_TURN_USERNAME || '';
   const turnCred = import.meta.env.VITE_TURN_CREDENTIAL || '';
 
   useEffect(() => () => stopAll(), []);
 
   function iceServers() {
-    const base = [
+    const servers = [
       { urls: 'stun:stun.l.google.com:19302' },
       { urls: 'stun:global.stun.twilio.com:3478?transport=udp' },
     ];
     if (turnUrl && turnUser && turnCred) {
-      base.push({ urls: turnUrl, username: turnUser, credential: turnCred });
+      servers.push({ urls: turnUrl, username: turnUser, credential: turnCred });
     }
-    return base;
+    return servers;
   }
 
-  function createPeer() {
+  function makePC() {
     const pc = new RTCPeerConnection({ iceServers: iceServers() });
     pc.onconnectionstatechange = () => setPcState(pc.connectionState || 'unknown');
     return pc;
@@ -942,13 +943,13 @@ function SecretWebRTCPage({ onBack }) {
       const pc = pcRef.current;
       if (!pc) return;
 
-      if (type === 'offer' && status === 'viewing') {
+      if (type === 'offer' && role === 'viewer') {
         await pc.setRemoteDescription(new RTCSessionDescription(data));
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
         await ch.send({ type: 'broadcast', event: 'signal', payload: { type: 'answer', data: answer } });
       }
-      if (type === 'answer' && status === 'casting') {
+      if (type === 'answer' && role === 'caster') {
         await pc.setRemoteDescription(new RTCSessionDescription(data));
       }
       if (type === 'ice') {
@@ -956,9 +957,7 @@ function SecretWebRTCPage({ onBack }) {
       }
     });
 
-    await new Promise((resolve) => {
-      ch.subscribe((state) => { if (state === 'SUBSCRIBED') resolve(); });
-    });
+    await new Promise(resolve => ch.subscribe(state => state === 'SUBSCRIBED' && resolve()));
     channelRef.current = ch;
     return ch;
   }
@@ -970,21 +969,22 @@ function SecretWebRTCPage({ onBack }) {
 
   async function startCasting() {
     if (!roomId.trim()) return alert('Podaj kod pokoju.');
-    setStatus('casting');
+    setRole('caster');
     const ch = await joinChannel(roomId.trim());
 
     const stream = await navigator.mediaDevices.getUserMedia(camConstraints());
     localStreamRef.current = stream;
 
-    if (localVideoRef.current) {
-      localVideoRef.current.srcObject = stream;
-      localVideoRef.current.muted = true; // autoplay local
-      localVideoRef.current.playsInline = true;
-      try { await localVideoRef.current.play(); } catch {}
+    // jeden <video> pokazuje lokalny obraz (telefon)
+    if (videoRef.current) {
+      videoRef.current.srcObject = stream;
+      videoRef.current.muted = true;       // wymagane, by autoplay zadziałał
+      videoRef.current.playsInline = true;
+      try { await videoRef.current.play(); } catch {}
     }
 
-    const pc = createPeer();
-    // sendrecv = stabilniejsza negocjacja
+    const pc = makePC();
+    // sendrecv poprawia negocjację
     pc.addTransceiver('video', { direction: 'sendrecv' });
     pc.addTransceiver('audio', { direction: 'sendrecv' });
     stream.getTracks().forEach(t => pc.addTrack(t, stream));
@@ -1000,47 +1000,35 @@ function SecretWebRTCPage({ onBack }) {
 
   async function startViewing() {
     if (!roomId.trim()) return alert('Podaj kod pokoju.');
-    setStatus('viewing');
+    setRole('viewer');
     const ch = await joinChannel(roomId.trim());
 
-    const pc = createPeer();
-    // recvonly po stronie oglądającego – wiele przeglądarek lepiej negocjuje
+    const pc = makePC();
+    // viewer tylko odbiera
     pc.addTransceiver('video', { direction: 'recvonly' });
     pc.addTransceiver('audio', { direction: 'recvonly' });
-
     pc.onicecandidate = async (e) => {
       if (e.candidate) await ch.send({ type: 'broadcast', event: 'signal', payload: { type: 'ice', data: e.candidate } });
     };
     pc.ontrack = async (e) => {
       const stream = e.streams[0];
-      const el = remoteVideoRef.current;
+      const el = videoRef.current;
       if (!el) return;
       el.srcObject = stream;
       el.playsInline = true;
-
-      // Autoplay bywa blokowany – spróbuj uruchomić, a jak się nie uda, pokaż przycisk
-      try {
-        await el.play();
-        setNeedsManualPlay(false);
-      } catch {
-        setNeedsManualPlay(true);
-      }
+      try { await el.play(); setNeedsManualPlay(false); } catch { setNeedsManualPlay(true); }
     };
     pcRef.current = pc;
   }
 
   async function manualPlay() {
-    try {
-      await remoteVideoRef.current.play();
-      setNeedsManualPlay(false);
-    } catch {
-      // nie udało się – user musi kliknąć ponownie lub odblokować autoplay w przeglądarce
-    }
+    try { await videoRef.current?.play(); setNeedsManualPlay(false); } catch {}
   }
 
   async function switchCamera() {
+    // działa tylko w trybie caster
     setUseBackCam(v => !v);
-    if (status !== 'casting') return;
+    if (role !== 'caster') return;
     try {
       const newStream = await navigator.mediaDevices.getUserMedia(camConstraints());
       const pc = pcRef.current;
@@ -1052,12 +1040,12 @@ function SecretWebRTCPage({ onBack }) {
       if (vSender && newVideo) await vSender.replaceTrack(newVideo);
       if (aSender && newAudio) await aSender.replaceTrack(newAudio);
 
-      // lokalny podgląd
+      // podmień lokalny podgląd (nadal JEDNO wideo)
       localStreamRef.current?.getTracks()?.forEach(t => t.stop());
       localStreamRef.current = newStream;
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = newStream;
-        try { await localVideoRef.current.play(); } catch {}
+      if (videoRef.current) {
+        videoRef.current.srcObject = newStream;
+        try { await videoRef.current.play(); } catch {}
       }
     } catch {
       alert('Nie udało się przełączyć kamery.');
@@ -1065,7 +1053,7 @@ function SecretWebRTCPage({ onBack }) {
   }
 
   function stopAll() {
-    setStatus('idle');
+    setRole('idle');
     try { channelRef.current?.unsubscribe?.(); } catch {}
     try { pcRef.current?.close?.(); } catch {}
     try { localStreamRef.current?.getTracks()?.forEach(t => t.stop()); } catch {}
@@ -1076,62 +1064,83 @@ function SecretWebRTCPage({ onBack }) {
 
   return (
     <main className="min-h-screen bg-gradient-to-b from-slate-50 to-slate-100 p-4">
-      <div className="max-w-3xl mx-auto">
+      <div className="max-w-xl mx-auto">
         <header className="flex items-center justify-between">
-          <h1 className="text-2xl font-bold">Tajny podgląd kamery</h1>
+          <h1 className="text-2xl font-bold">Tajny podgląd kamery (prosty)</h1>
           <button onClick={() => { stopAll(); onBack(); }} className="px-3 py-2 rounded-xl bg-gray-200 hover:bg-gray-300">← Wróć</button>
         </header>
 
         <section className="mt-4 bg-white rounded-2xl shadow p-4">
           <p className="text-sm text-gray-600">
-            Użyj tego samego <b>kodu pokoju</b> na telefonie (Nadaj obraz) i komputerze (Podgląd). Strony muszą działać przez HTTPS.
+            Ten sam <b>kod pokoju</b> na telefonie i komputerze. HTTPS wymagany.
           </p>
 
           <div className="mt-3 flex flex-col sm:flex-row gap-2 sm:items-center">
-            <input className="border rounded-xl px-3 h-10 flex-1" placeholder="Kod pokoju (np. pokoj-1)" value={roomId} onChange={(e)=>setRoomId(e.target.value)} />
-            <button className={`px-4 h-10 rounded-xl ${status==='casting'?'bg-purple-600 text-white':'bg-purple-100 hover:bg-purple-200'}`} onClick={startCasting}>
-              Nadaj obraz (telefon)
+            <input
+              className="border rounded-xl px-3 h-10 flex-1"
+              placeholder="Kod pokoju (np. pokoj-1)"
+              value={roomId}
+              onChange={(e)=>setRoomId(e.target.value)}
+            />
+            <button
+              className={`px-4 h-10 rounded-xl ${role==='caster'?'bg-purple-600 text-white':'bg-purple-100 hover:bg-purple-200'}`}
+              onClick={startCasting}
+              title="Użyj na telefonie (nadajesz obraz)"
+            >
+              Nadaj (telefon)
             </button>
-            <button className={`px-4 h-10 rounded-xl ${status==='viewing'?'bg-green-600 text-white':'bg-green-100 hover:bg-green-200'}`} onClick={startViewing}>
-              Podgląd (ten sprzęt)
+            <button
+              className={`px-4 h-10 rounded-xl ${role==='viewer'?'bg-green-600 text-white':'bg-green-100 hover:bg-green-200'}`}
+              onClick={startViewing}
+              title="Użyj na komputerze (oglądasz)"
+            >
+              Podgląd (komputer)
             </button>
             <button className="px-4 h-10 rounded-xl bg-gray-100 hover:bg-gray-200" onClick={stopAll}>Stop</button>
           </div>
 
           <div className="mt-2 flex items-center gap-2">
-            <button className="px-3 py-2 rounded-lg border hover:bg-gray-50" onClick={switchCamera} disabled={status!=='casting'}>
+            <button
+              className="px-3 py-2 rounded-lg border hover:bg-gray-50 disabled:opacity-50"
+              onClick={switchCamera}
+              disabled={role!=='caster'}
+              title="Przełącz przód/tył (tylko gdy nadajesz)"
+            >
               Przełącz kamera: {useBackCam ? 'Tył' : 'Przód'}
             </button>
             <span className="text-xs text-gray-600">Stan połączenia: <b>{pcState}</b></span>
-            {(!turnUrl || !turnUser || !turnCred) && <span className="text-xs text-amber-700 bg-amber-100 px-2 py-1 rounded">TURN: nie skonfigurowano</span>}
+            {(!turnUrl || !turnUser || !turnCred) && (
+              <span className="text-xs text-amber-700 bg-amber-100 px-2 py-1 rounded">TURN nie skonfigurowano</span>
+            )}
           </div>
 
-          <div className="grid sm:grid-cols-2 gap-4 mt-4">
-            <div>
-              <p className="text-sm font-medium mb-1">Podgląd lokalny (nadawca)</p>
-              <video ref={localVideoRef} autoPlay playsInline muted className="w-full rounded-xl bg-black aspect-video" />
-            </div>
-            <div className="relative">
-              <p className="text-sm font-medium mb-1">Zdalny obraz (odbiorca)</p>
-              <video ref={remoteVideoRef} autoPlay playsInline className="w-full rounded-xl bg-black aspect-video" />
-              {needsManualPlay && (
-                <button
-                  onClick={manualPlay}
-                  className="absolute inset-0 m-auto h-12 w-40 rounded-xl bg-black/70 text-white"
-                >
-                  Odtwórz wideo
-                </button>
-              )}
-            </div>
+          <div className="mt-4 relative">
+            {/* JEDEN element video – lokalny w trybie caster / zdalny w trybie viewer */}
+            <video
+              ref={videoRef}
+              autoPlay
+              playsInline
+              className="w-full rounded-xl bg-black aspect-video"
+            />
+            {needsManualPlay && role==='viewer' && (
+              <button
+                onClick={manualPlay}
+                className="absolute inset-0 m-auto h-12 w-40 rounded-xl bg-black/70 text-white"
+                title="Kliknij, aby odtworzyć (autoplay zablokowany)"
+              >
+                Odtwórz wideo
+              </button>
+            )}
           </div>
         </section>
 
         <p className="text-xs text-gray-500 mt-3">
-          Jeśli między różnymi sieciami nadal czarny ekran: to prawie na pewno NAT/firewall → skonfiguruj serwer TURN (wprowadź VITE_TURN_URL/USERNAME/CREDENTIAL w Vercel).
+          Jeśli na różnych sieciach nadal czarny ekran → potrzebny serwer TURN (uzupełnij VITE_TURN_URL/USERNAME/CREDENTIAL w Vercel).
         </p>
       </div>
     </main>
   );
 }
+
 
 
