@@ -570,13 +570,13 @@ export default function App() {
   )
 }
 
-/* ======================= KAMERKA (auto-połączenie + ping, H.264 prefer) ======================= */
+/* ======================= KAMERKA (auto-połączenie, SDP/ICE jako JSON) ======================= */
 function SecretWebRTCPage({ onBack }) {
   const videoRef = useRef(null)
   const pcRef = useRef(null)
   const localStreamRef = useRef(null)
   const channelRef = useRef(null)
-  const lastOfferRef = useRef(null)
+  const lastOfferRef = useRef(null) // { type:'offer', sdp:'...' }
 
   const [room, setRoom] = useState('')
   const [role, setRole] = useState('idle') // 'idle' | 'caster' | 'viewer'
@@ -589,6 +589,7 @@ function SecretWebRTCPage({ onBack }) {
 
   const log = (...a) => setLogLines(l => [...l.slice(-200), `[${new Date().toLocaleTimeString()}] ${a.join(' ')}`])
 
+  // --- ICE servers (TURN/STUN via Metered) ---
   async function fetchIceServers() {
     try {
       if (!METERED_DOMAIN || !METERED_API_KEY) {
@@ -638,39 +639,43 @@ function SecretWebRTCPage({ onBack }) {
     return { video, audio: false }
   }
 
-  // czekamy na SUBSCRIBED zanim zwrócimy kanał
-  function ensureChannel(roomName) {
-    if (channelRef.current) return Promise.resolve(channelRef.current)
+  // --- Supabase Realtime: czekamy na SUBSCRIBED i normalizujemy payloady ---
+  function normalizedRoom(name) {
+    return (name || '').trim().toLowerCase()
+  }
 
-    return new Promise((resolve) => {
+  function ensureChannel(roomNameRaw) {
+    const channelReady = new Promise((resolve) => {
+      if (channelRef.current) return resolve(channelRef.current)
+      const roomName = normalizedRoom(roomNameRaw)
       const ch = supabase.channel(`webrtc:${roomName}`, { config: { broadcast: { self: false } } })
 
       ch.subscribe((status) => {
         log('RT ch status:', status)
-        if (status === 'SUBSCRIBED') {
-          resolve(ch)
-        }
+        if (status === 'SUBSCRIBED') resolve(ch)
       })
 
       ch.on('broadcast', { event: 'webrtc' }, async ({ payload }) => {
         const pc = pcRef.current
         if (!pc) return
         try {
-          switch (payload.type) {
+          switch (payload.kind) {
             case 'ping': {
               if (role === 'caster' && lastOfferRef.current) {
                 log('RX ping → TX offer')
-                ch.send({ type: 'broadcast', event: 'webrtc', payload: { type: 'offer', sdp: lastOfferRef.current } })
+                ch.send({ type: 'broadcast', event: 'webrtc', payload: { kind: 'offer', desc: lastOfferRef.current } })
               }
               break
             }
             case 'offer': {
               if (role === 'viewer') {
                 log('RX offer → setRemote + createAnswer')
-                await pc.setRemoteDescription(payload.sdp)
+                const remote = payload.desc // { type:'offer', sdp:'...' }
+                await pc.setRemoteDescription(remote)
                 const answer = await pc.createAnswer()
                 await pc.setLocalDescription(answer)
-                ch.send({ type: 'broadcast', event: 'webrtc', payload: { type: 'answer', sdp: pc.localDescription } })
+                // nadaj tylko „suchy” JSON: { type:'answer', sdp:'...' }
+                ch.send({ type: 'broadcast', event: 'webrtc', payload: { kind: 'answer', desc: { type: pc.localDescription.type, sdp: pc.localDescription.sdp } } })
                 log('TX answer')
               }
               break
@@ -678,13 +683,16 @@ function SecretWebRTCPage({ onBack }) {
             case 'answer': {
               if (role === 'caster') {
                 log('RX answer → setRemote')
-                await pc.setRemoteDescription(payload.sdp)
+                const remote = payload.desc // { type:'answer', sdp:'...' }
+                await pc.setRemoteDescription(remote)
               }
               break
             }
             case 'ice': {
+              // ICE też tylko jako JSON
+              const cand = payload.candidate // { candidate, sdpMid, sdpMLineIndex, usernameFragment? }
               log('RX ice')
-              await pc.addIceCandidate(payload.candidate)
+              await pc.addIceCandidate(cand)
               break
             }
           }
@@ -695,6 +703,8 @@ function SecretWebRTCPage({ onBack }) {
 
       channelRef.current = ch
     })
+
+    return channelReady
   }
 
   async function startCaster() {
@@ -703,16 +713,17 @@ function SecretWebRTCPage({ onBack }) {
     const pc = await makePC()
     pcRef.current = pc
 
-    const ch = await ensureChannel(room.trim()) // czekamy aż SUBSCRIBED
+    const ch = await ensureChannel(room.trim())
 
     pc.onicecandidate = (e) => {
       if (e.candidate) {
-        ch.send({ type: 'broadcast', event: 'webrtc', payload: { type: 'ice', candidate: e.candidate } })
+        // Wysyłaj ICE jako JSON
+        ch.send({ type: 'broadcast', event: 'webrtc', payload: { kind: 'ice', candidate: e.candidate.toJSON() } })
         log('TX ice')
       }
     }
 
-    // tylko addTrack — brak addTransceiver, żeby nie dublować m-line
+    // tylko addTrack → brak dublowania m-line
     const stream = await navigator.mediaDevices.getUserMedia(camConstraints())
     localStreamRef.current = stream
     const videoTrack = stream.getVideoTracks()[0]
@@ -729,18 +740,23 @@ function SecretWebRTCPage({ onBack }) {
 
     const offer = await pc.createOffer({ offerToReceiveVideo: false })
     await pc.setLocalDescription(offer)
-    lastOfferRef.current = pc.localDescription
-    ch.send({ type: 'broadcast', event: 'webrtc', payload: { type: 'offer', sdp: pc.localDescription } })
+
+    // zapamiętaj „suchy” opis, a nie obiekt RTC
+    lastOfferRef.current = { type: pc.localDescription.type, sdp: pc.localDescription.sdp }
+
+    // i wyślij jako JSON
+    ch.send({ type: 'broadcast', event: 'webrtc', payload: { kind: 'offer', desc: lastOfferRef.current } })
     log('TX offer (initial)')
 
-    // co 3 s dopychamy offer, dopóki nie ustawimy remoteDescription (czyli nie ma jeszcze answer)
+    // re-TX co 3s, dopóki nie dostanie „answer”
     const resend = setInterval(() => {
-      if (!pcRef.current) { clearInterval(resend); return }
-      const stable = pcRef.current.signalingState === 'stable' && pcRef.current.currentRemoteDescription
+      const pcc = pcRef.current
+      if (!pcc) { clearInterval(resend); return }
+      const stable = pcc.signalingState === 'stable' && pcc.currentRemoteDescription
       if (stable) { clearInterval(resend); return }
       if (lastOfferRef.current) {
         log('Re-TX offer (retry)')
-        ch.send({ type: 'broadcast', event: 'webrtc', payload: { type: 'offer', sdp: lastOfferRef.current } })
+        ch.send({ type: 'broadcast', event: 'webrtc', payload: { kind: 'offer', desc: lastOfferRef.current } })
       }
     }, 3000)
   }
@@ -751,11 +767,11 @@ function SecretWebRTCPage({ onBack }) {
     const pc = await makePC()
     pcRef.current = pc
 
-    const ch = await ensureChannel(room.trim()) // czekamy aż SUBSCRIBED
+    const ch = await ensureChannel(room.trim())
 
     pc.onicecandidate = (e) => {
       if (e.candidate) {
-        ch.send({ type: 'broadcast', event: 'webrtc', payload: { type: 'ice', candidate: e.candidate } })
+        ch.send({ type: 'broadcast', event: 'webrtc', payload: { kind: 'ice', candidate: e.candidate.toJSON() } })
         log('TX ice')
       }
     }
@@ -770,11 +786,12 @@ function SecretWebRTCPage({ onBack }) {
       log('ontrack stream')
     }
 
-    // ping co 2 s, aż dostaniemy offer i ustawimy remote
+    // ping co 2s, aż dostaniemy offer
     const pingInt = setInterval(() => {
-      if (!pcRef.current) { clearInterval(pingInt); return }
-      if (pcRef.current.remoteDescription) { clearInterval(pingInt); return }
-      ch.send({ type: 'broadcast', event: 'webrtc', payload: { type: 'ping' } })
+      const pcc = pcRef.current
+      if (!pcc) { clearInterval(pingInt); return }
+      if (pcc.remoteDescription) { clearInterval(pingInt); return }
+      ch.send({ type: 'broadcast', event: 'webrtc', payload: { kind: 'ping' } })
       log('TX ping (request offer)')
     }, 2000)
   }
@@ -789,7 +806,6 @@ function SecretWebRTCPage({ onBack }) {
       const newVideo = newStream.getVideoTracks()[0]
       const vSender = senders.find(s => s.track && s.track.kind === 'video')
       if (vSender && newVideo) await vSender.replaceTrack(newVideo)
-
       localStreamRef.current?.getTracks()?.forEach(t => t.stop())
       localStreamRef.current = newStream
       if (videoRef.current) {
@@ -862,11 +878,12 @@ function SecretWebRTCPage({ onBack }) {
           </details>
 
           <p className="text-xs text-gray-500 mt-3">
-            Wpisz tę samą nazwę pokoju na telefonie i komputerze. Viewer pinguje co 2s, a telefon re-wysyła ofertę co 3s do czasu uzyskania odpowiedzi.
-            Sygnalizacja: Supabase Realtime. TURN/STUN: Metered.
+            Wpisz tę samą nazwę pokoju (małe/duże litery są ważne – używamy wersji z małych liter).  
+            Viewer pinguje co 2s, a telefon re-wysyła ofertę co 3s, dopóki nie przyjdzie odpowiedź.
           </p>
         </section>
       </div>
     </main>
   )
 }
+
