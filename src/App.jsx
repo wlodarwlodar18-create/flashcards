@@ -644,62 +644,88 @@ function SecretWebRTCPage({ onBack }) {
     return (name || '').trim().toLowerCase()
   }
 
-  function ensureChannel(roomNameRaw) {
-    const channelReady = new Promise((resolve) => {
-      if (channelRef.current) return resolve(channelRef.current)
-      const roomName = normalizedRoom(roomNameRaw)
-      const ch = supabase.channel(`webrtc:${roomName}`, { config: { broadcast: { self: false } } })
+  // --- Supabase Realtime: czekamy na SUBSCRIBED i normalizujemy payloady ---
+// DODAJ powyżej ensureChannel:
+const channelRoomRef = useRef(null)
 
-      ch.subscribe((status) => {
-        log('RT ch status:', status)
-        if (status === 'SUBSCRIBED') resolve(ch)
-      })
+function normalizedRoom(name) {
+  return (name || '').trim().toLowerCase()
+}
 
-      ch.on('broadcast', { event: 'webrtc' }, async ({ payload }) => {
-        const pc = pcRef.current
-        if (!pc) return
-        try {
-          switch (payload.kind) {
-            case 'ping': {
-              if (role === 'caster' && lastOfferRef.current) {
-                log('RX ping → TX offer')
-                ch.send({ type: 'broadcast', event: 'webrtc', payload: { kind: 'offer', desc: lastOfferRef.current } })
-              }
-              break
+function ensureChannel(roomNameRaw) {
+  const wanted = normalizedRoom(roomNameRaw)
+
+  // jeśli mamy kanał ALE dla innego pokoju → odsubskrybuj i wyczyść
+  if (channelRef.current && channelRoomRef.current !== wanted) {
+    try { channelRef.current.unsubscribe() } catch {}
+    channelRef.current = null
+    channelRoomRef.current = null
+  }
+
+  if (channelRef.current) {
+    // już właściwy pokój
+    return Promise.resolve(channelRef.current)
+  }
+
+  // tworzymy nowy kanał dla tego pokoju i zwracamy Promise SUBSCRIBED
+  return new Promise((resolve) => {
+    const ch = supabase.channel(`webrtc:${wanted}`, { config: { broadcast: { self: false } } })
+
+    ch.subscribe((status) => {
+      log('RT ch status:', status, `(room=${wanted})`)
+      if (status === 'SUBSCRIBED') {
+        channelRef.current = ch
+        channelRoomRef.current = wanted
+        resolve(ch)
+      }
+    })
+
+    ch.on('broadcast', { event: 'webrtc' }, async ({ payload }) => {
+      const pc = pcRef.current
+      if (!pc) return
+      try {
+        switch (payload.kind) {
+          case 'ping': {
+            if (role === 'caster' && lastOfferRef.current) {
+              log('RX ping → TX offer')
+              ch.send({ type: 'broadcast', event: 'webrtc', payload: { kind: 'offer', desc: lastOfferRef.current } })
             }
-            case 'offer': {
-              if (role === 'viewer') {
-                log('RX offer → setRemote + createAnswer')
-                const remote = payload.desc // { type:'offer', sdp:'...' }
-                await pc.setRemoteDescription(remote)
-                const answer = await pc.createAnswer()
-                await pc.setLocalDescription(answer)
-                // nadaj tylko „suchy” JSON: { type:'answer', sdp:'...' }
-                ch.send({ type: 'broadcast', event: 'webrtc', payload: { kind: 'answer', desc: { type: pc.localDescription.type, sdp: pc.localDescription.sdp } } })
-                log('TX answer')
-              }
-              break
-            }
-            case 'answer': {
-              if (role === 'caster') {
-                log('RX answer → setRemote')
-                const remote = payload.desc // { type:'answer', sdp:'...' }
-                await pc.setRemoteDescription(remote)
-              }
-              break
-            }
-            case 'ice': {
-              // ICE też tylko jako JSON
-              const cand = payload.candidate // { candidate, sdpMid, sdpMLineIndex, usernameFragment? }
-              log('RX ice')
-              await pc.addIceCandidate(cand)
-              break
-            }
+            break
           }
-        } catch (e) {
-          log('Signal err:', e.message)
+          case 'offer': {
+            if (role === 'viewer') {
+              log('RX offer → setRemote + createAnswer')
+              const remote = payload.desc // { type:'offer', sdp:'...' }
+              await pc.setRemoteDescription(remote)
+              const answer = await pc.createAnswer()
+              await pc.setLocalDescription(answer)
+              ch.send({ type: 'broadcast', event: 'webrtc', payload: { kind: 'answer', desc: { type: pc.localDescription.type, sdp: pc.localDescription.sdp } } })
+              log('TX answer')
+            }
+            break
+          }
+          case 'answer': {
+            if (role === 'caster') {
+              log('RX answer → setRemote')
+              const remote = payload.desc // { type:'answer', sdp:'...' }
+              await pc.setRemoteDescription(remote)
+            }
+            break
+          }
+          case 'ice': {
+            const cand = payload.candidate // { candidate, sdpMid, sdpMLineIndex, usernameFragment? }
+            log('RX ice')
+            await pc.addIceCandidate(cand)
+            break
+          }
         }
-      })
+      } catch (e) {
+        log('Signal err:', e.message)
+      }
+    })
+  })
+}
+
 
       channelRef.current = ch
     })
