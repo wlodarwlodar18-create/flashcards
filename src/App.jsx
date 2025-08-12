@@ -902,7 +902,9 @@ export default function App() {
 function SecretWebRTCPage({ onBack }) {
   const [roomId, setRoomId] = useState('');
   const [status, setStatus] = useState('idle'); // 'idle' | 'casting' | 'viewing'
-  const [useBackCam, setUseBackCam] = useState(true); // przełącznik kamera przód/tył
+  const [useBackCam, setUseBackCam] = useState(true);
+  const [needsManualPlay, setNeedsManualPlay] = useState(false);
+  const [pcState, setPcState] = useState('new');
 
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
@@ -910,88 +912,84 @@ function SecretWebRTCPage({ onBack }) {
   const channelRef = useRef(null);
   const localStreamRef = useRef(null);
 
-  useEffect(() => {
-    return () => stopAll();
-  }, []);
+  const turnUrl = import.meta.env.VITE_TURN_URL || '';
+  const turnUser = import.meta.env.VITE_TURN_USERNAME || '';
+  const turnCred = import.meta.env.VITE_TURN_CREDENTIAL || '';
+
+  useEffect(() => () => stopAll(), []);
+
+  function iceServers() {
+    const base = [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:global.stun.twilio.com:3478?transport=udp' },
+    ];
+    if (turnUrl && turnUser && turnCred) {
+      base.push({ urls: turnUrl, username: turnUser, credential: turnCred });
+    }
+    return base;
+  }
 
   function createPeer() {
-    const pc = new RTCPeerConnection({
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:global.stun.twilio.com:3478?transport=udp' },
-      ],
-    });
-    pc.onconnectionstatechange = () => {
-      console.log('PC state:', pc.connectionState);
-      if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
-        // często firewall/NAT – spróbuj ponownie wejść do pokoju lub użyj TURN
-      }
-    };
+    const pc = new RTCPeerConnection({ iceServers: iceServers() });
+    pc.onconnectionstatechange = () => setPcState(pc.connectionState || 'unknown');
     return pc;
   }
 
   async function joinChannel(id) {
     const ch = supabase.channel(`webrtc-${id}`);
-
     ch.on('broadcast', { event: 'signal' }, async ({ payload }) => {
       const { type, data } = payload || {};
-      if (!pcRef.current) return;
+      const pc = pcRef.current;
+      if (!pc) return;
 
       if (type === 'offer' && status === 'viewing') {
-        await pcRef.current.setRemoteDescription(new RTCSessionDescription(data));
-        const answer = await pcRef.current.createAnswer();
-        await pcRef.current.setLocalDescription(answer);
+        await pc.setRemoteDescription(new RTCSessionDescription(data));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
         await ch.send({ type: 'broadcast', event: 'signal', payload: { type: 'answer', data: answer } });
       }
-
       if (type === 'answer' && status === 'casting') {
-        await pcRef.current.setRemoteDescription(new RTCSessionDescription(data));
+        await pc.setRemoteDescription(new RTCSessionDescription(data));
       }
-
       if (type === 'ice') {
-        try { await pcRef.current.addIceCandidate(data); } catch (e) { console.warn('ICE add error', e); }
+        try { await pc.addIceCandidate(data); } catch {}
       }
     });
 
-    // POCZEKAJ, aż naprawdę dołączysz do kanału
     await new Promise((resolve) => {
-      ch.subscribe((state) => {
-        if (state === 'SUBSCRIBED') resolve();
-      });
+      ch.subscribe((state) => { if (state === 'SUBSCRIBED') resolve(); });
     });
-
     channelRef.current = ch;
     return ch;
   }
 
-  function getConstraints() {
-    // wymuś tylną/przednią kamerę, ale nie bądź „exact”, żeby Safari nie wywalił błędu
-    const video = useBackCam
-      ? { facingMode: { ideal: 'environment' } }
-      : { facingMode: { ideal: 'user' } };
+  function camConstraints() {
+    const video = useBackCam ? { facingMode: { ideal: 'environment' } } : { facingMode: { ideal: 'user' } };
     return { video, audio: true };
   }
 
   async function startCasting() {
-    if (!roomId.trim()) { alert('Podaj kod pokoju.'); return; }
+    if (!roomId.trim()) return alert('Podaj kod pokoju.');
     setStatus('casting');
     const ch = await joinChannel(roomId.trim());
 
-    // Pobierz media z wybraną kamerą
-    const stream = await navigator.mediaDevices.getUserMedia(getConstraints());
+    const stream = await navigator.mediaDevices.getUserMedia(camConstraints());
     localStreamRef.current = stream;
+
     if (localVideoRef.current) {
       localVideoRef.current.srcObject = stream;
-      localVideoRef.current.muted = true; // lokalny podgląd musi być wyciszony dla autoplay
-      localVideoRef.current.play().catch(()=>{});
+      localVideoRef.current.muted = true; // autoplay local
+      localVideoRef.current.playsInline = true;
+      try { await localVideoRef.current.play(); } catch {}
     }
 
     const pc = createPeer();
-    stream.getTracks().forEach(tr => pc.addTrack(tr, stream));
+    // sendrecv = stabilniejsza negocjacja
+    pc.addTransceiver('video', { direction: 'sendrecv' });
+    pc.addTransceiver('audio', { direction: 'sendrecv' });
+    stream.getTracks().forEach(t => pc.addTrack(t, stream));
     pc.onicecandidate = async (e) => {
-      if (e.candidate) {
-        await ch.send({ type: 'broadcast', event: 'signal', payload: { type: 'ice', data: e.candidate } });
-      }
+      if (e.candidate) await ch.send({ type: 'broadcast', event: 'signal', payload: { type: 'ice', data: e.candidate } });
     };
     pcRef.current = pc;
 
@@ -1001,24 +999,69 @@ function SecretWebRTCPage({ onBack }) {
   }
 
   async function startViewing() {
-    if (!roomId.trim()) { alert('Podaj kod pokoju.'); return; }
+    if (!roomId.trim()) return alert('Podaj kod pokoju.');
     setStatus('viewing');
     const ch = await joinChannel(roomId.trim());
 
     const pc = createPeer();
+    // recvonly po stronie oglądającego – wiele przeglądarek lepiej negocjuje
+    pc.addTransceiver('video', { direction: 'recvonly' });
+    pc.addTransceiver('audio', { direction: 'recvonly' });
+
     pc.onicecandidate = async (e) => {
-      if (e.candidate) {
-        await ch.send({ type: 'broadcast', event: 'signal', payload: { type: 'ice', data: e.candidate } });
-      }
+      if (e.candidate) await ch.send({ type: 'broadcast', event: 'signal', payload: { type: 'ice', data: e.candidate } });
     };
-    pc.ontrack = (e) => {
-      if (remoteVideoRef.current) {
-        remoteVideoRef.current.srcObject = e.streams[0];
-        remoteVideoRef.current.play().catch(()=>{});
+    pc.ontrack = async (e) => {
+      const stream = e.streams[0];
+      const el = remoteVideoRef.current;
+      if (!el) return;
+      el.srcObject = stream;
+      el.playsInline = true;
+
+      // Autoplay bywa blokowany – spróbuj uruchomić, a jak się nie uda, pokaż przycisk
+      try {
+        await el.play();
+        setNeedsManualPlay(false);
+      } catch {
+        setNeedsManualPlay(true);
       }
     };
     pcRef.current = pc;
-    // Viewer czeka na ofertę (otrzyma przez kanał)
+  }
+
+  async function manualPlay() {
+    try {
+      await remoteVideoRef.current.play();
+      setNeedsManualPlay(false);
+    } catch {
+      // nie udało się – user musi kliknąć ponownie lub odblokować autoplay w przeglądarce
+    }
+  }
+
+  async function switchCamera() {
+    setUseBackCam(v => !v);
+    if (status !== 'casting') return;
+    try {
+      const newStream = await navigator.mediaDevices.getUserMedia(camConstraints());
+      const pc = pcRef.current;
+      const senders = pc.getSenders();
+      const newVideo = newStream.getVideoTracks()[0];
+      const newAudio = newStream.getAudioTracks()[0];
+      const vSender = senders.find(s => s.track && s.track.kind === 'video');
+      const aSender = senders.find(s => s.track && s.track.kind === 'audio');
+      if (vSender && newVideo) await vSender.replaceTrack(newVideo);
+      if (aSender && newAudio) await aSender.replaceTrack(newAudio);
+
+      // lokalny podgląd
+      localStreamRef.current?.getTracks()?.forEach(t => t.stop());
+      localStreamRef.current = newStream;
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = newStream;
+        try { await localVideoRef.current.play(); } catch {}
+      }
+    } catch {
+      alert('Nie udało się przełączyć kamery.');
+    }
   }
 
   function stopAll() {
@@ -1031,33 +1074,6 @@ function SecretWebRTCPage({ onBack }) {
     localStreamRef.current = null;
   }
 
-  async function switchCamera() {
-    // pozwala przełączyć przód/tył podczas nadawania
-    setUseBackCam(v => !v);
-    if (status !== 'casting') return;
-    try {
-      const newStream = await navigator.mediaDevices.getUserMedia(getConstraints());
-      const pc = pcRef.current;
-      const senders = pc.getSenders();
-      // podmień tracki w locie
-      const newVideo = newStream.getVideoTracks()[0];
-      const newAudio = newStream.getAudioTracks()[0];
-      const vSender = senders.find(s => s.track && s.track.kind === 'video');
-      const aSender = senders.find(s => s.track && s.track.kind === 'audio');
-      if (vSender && newVideo) await vSender.replaceTrack(newVideo);
-      if (aSender && newAudio) await aSender.replaceTrack(newAudio);
-      // podmień lokalny podgląd
-      localStreamRef.current?.getTracks()?.forEach(t => t.stop());
-      localStreamRef.current = newStream;
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = newStream;
-        localVideoRef.current.play().catch(()=>{});
-      }
-    } catch (e) {
-      alert('Nie udało się przełączyć kamery. Spróbuj ponownie i sprawdź uprawnienia.');
-    }
-  }
-
   return (
     <main className="min-h-screen bg-gradient-to-b from-slate-50 to-slate-100 p-4">
       <div className="max-w-3xl mx-auto">
@@ -1068,41 +1084,26 @@ function SecretWebRTCPage({ onBack }) {
 
         <section className="mt-4 bg-white rounded-2xl shadow p-4">
           <p className="text-sm text-gray-600">
-            Telefon i komputer muszą być na HTTPS. Najpierw wpisz ten sam <b>kod pokoju</b>.
-            Na telefonie kliknij <b>Nadaj obraz</b>, na komputerze <b>Podgląd</b>.
+            Użyj tego samego <b>kodu pokoju</b> na telefonie (Nadaj obraz) i komputerze (Podgląd). Strony muszą działać przez HTTPS.
           </p>
 
           <div className="mt-3 flex flex-col sm:flex-row gap-2 sm:items-center">
-            <input
-              className="border rounded-xl px-3 h-10 flex-1"
-              placeholder="Kod pokoju (np. pokoj-1)"
-              value={roomId}
-              onChange={(e)=>setRoomId(e.target.value)}
-            />
-            <button
-              className={`px-4 h-10 rounded-xl ${status==='casting'?'bg-purple-600 text-white':'bg-purple-100 hover:bg-purple-200'}`}
-              onClick={startCasting}
-            >
+            <input className="border rounded-xl px-3 h-10 flex-1" placeholder="Kod pokoju (np. pokoj-1)" value={roomId} onChange={(e)=>setRoomId(e.target.value)} />
+            <button className={`px-4 h-10 rounded-xl ${status==='casting'?'bg-purple-600 text-white':'bg-purple-100 hover:bg-purple-200'}`} onClick={startCasting}>
               Nadaj obraz (telefon)
             </button>
-            <button
-              className={`px-4 h-10 rounded-xl ${status==='viewing'?'bg-green-600 text-white':'bg-green-100 hover:bg-green-200'}`}
-              onClick={startViewing}
-            >
+            <button className={`px-4 h-10 rounded-xl ${status==='viewing'?'bg-green-600 text-white':'bg-green-100 hover:bg-green-200'}`} onClick={startViewing}>
               Podgląd (ten sprzęt)
             </button>
             <button className="px-4 h-10 rounded-xl bg-gray-100 hover:bg-gray-200" onClick={stopAll}>Stop</button>
           </div>
 
-          <div className="mt-2">
-            <button
-              className="px-3 py-2 rounded-lg border hover:bg-gray-50"
-              onClick={switchCamera}
-              disabled={status!=='casting'}
-              title="Przełącz przód/tył (działa podczas nadawania)"
-            >
+          <div className="mt-2 flex items-center gap-2">
+            <button className="px-3 py-2 rounded-lg border hover:bg-gray-50" onClick={switchCamera} disabled={status!=='casting'}>
               Przełącz kamera: {useBackCam ? 'Tył' : 'Przód'}
             </button>
+            <span className="text-xs text-gray-600">Stan połączenia: <b>{pcState}</b></span>
+            {(!turnUrl || !turnUser || !turnCred) && <span className="text-xs text-amber-700 bg-amber-100 px-2 py-1 rounded">TURN: nie skonfigurowano</span>}
           </div>
 
           <div className="grid sm:grid-cols-2 gap-4 mt-4">
@@ -1110,19 +1111,27 @@ function SecretWebRTCPage({ onBack }) {
               <p className="text-sm font-medium mb-1">Podgląd lokalny (nadawca)</p>
               <video ref={localVideoRef} autoPlay playsInline muted className="w-full rounded-xl bg-black aspect-video" />
             </div>
-            <div>
+            <div className="relative">
               <p className="text-sm font-medium mb-1">Zdalny obraz (odbiorca)</p>
               <video ref={remoteVideoRef} autoPlay playsInline className="w-full rounded-xl bg-black aspect-video" />
+              {needsManualPlay && (
+                <button
+                  onClick={manualPlay}
+                  className="absolute inset-0 m-auto h-12 w-40 rounded-xl bg-black/70 text-white"
+                >
+                  Odtwórz wideo
+                </button>
+              )}
             </div>
           </div>
         </section>
 
         <p className="text-xs text-gray-500 mt-3">
-          Jeśli obraz nie pojawia się między różnymi sieciami, to typowy problem NAT/Firewall — potrzebny serwer TURN.
-          Do testów spróbuj najpierw w tej samej sieci Wi-Fi (telefon + komputer).
+          Jeśli między różnymi sieciami nadal czarny ekran: to prawie na pewno NAT/firewall → skonfiguruj serwer TURN (wprowadź VITE_TURN_URL/USERNAME/CREDENTIAL w Vercel).
         </p>
       </div>
     </main>
   );
 }
+
 
