@@ -570,36 +570,49 @@ export default function App() {
   )
 }
 
-/* ======================= KAMERKA (1 okno, auto sygnalizacja) ======================= */
+/* ======================= KAMERKA (1 okno, auto sygnalizacja + ping) ======================= */
 function SecretWebRTCPage({ onBack }) {
   const videoRef = useRef(null)
   const pcRef = useRef(null)
   const localStreamRef = useRef(null)
   const channelRef = useRef(null)
-
+  const lastOfferRef = useRef(null) // zapamiętujemy offer, by móc go dosyłać na żądanie
   const [room, setRoom] = useState('')
   const [role, setRole] = useState('idle') // 'idle' | 'caster' | 'viewer'
   const [useBackCam, setUseBackCam] = useState(true)
   const [pcState, setPcState] = useState('new')
   const [needsManualPlay, setNeedsManualPlay] = useState(false)
+  const [logLines, setLogLines] = useState([])
 
   useEffect(()=>()=>stopAll(),[])
 
+  const log = (...a) => setLogLines(l => [...l.slice(-200), `[${new Date().toLocaleTimeString()}] ${a.join(' ')}`])
+
   async function fetchIceServers() {
-    if (!METERED_DOMAIN || !METERED_API_KEY) {
-      // fallback (działa w LAN)
+    try {
+      if (!METERED_DOMAIN || !METERED_API_KEY) {
+        log('ICE','fallback STUN')
+        return [{ urls: 'stun:stun.l.google.com:19302' }]
+      }
+      const url = `https://${METERED_DOMAIN}/api/v1/turn/credentials?apiKey=${encodeURIComponent(METERED_API_KEY)}`
+      const res = await fetch(url)
+      if (!res.ok) throw new Error('fetch ice failed')
+      const json = await res.json()
+      log('ICE','metered ok')
+      return json
+    } catch (e) {
+      log('ICE','error', e.message)
       return [{ urls: 'stun:stun.l.google.com:19302' }]
     }
-    const url = `https://${METERED_DOMAIN}/api/v1/turn/credentials?apiKey=${encodeURIComponent(METERED_API_KEY)}`
-    const res = await fetch(url)
-    if (!res.ok) throw new Error('Nie udało się pobrać iceServers z Metered.')
-    return await res.json()
   }
 
   async function makePC() {
     const iceServers = await fetchIceServers()
     const pc = new RTCPeerConnection({ iceServers })
-    pc.onconnectionstatechange = () => setPcState(pc.connectionState || 'unknown')
+    pc.onconnectionstatechange = () => {
+      setPcState(pc.connectionState || 'unknown')
+      log('PC state:', pc.connectionState)
+    }
     return pc
   }
 
@@ -610,30 +623,49 @@ function SecretWebRTCPage({ onBack }) {
 
   function ensureChannel(roomName) {
     if (channelRef.current) return channelRef.current
-    const ch = supabase.channel(`webrtc:${roomName}`, {
-      config: { broadcast: { self: false } }
-    })
+    const ch = supabase.channel(`webrtc:${roomName}`, { config: { broadcast: { self: false } } })
     ch.subscribe((status) => {
-      if (status === 'SUBSCRIBED') {
-        // ok
-      }
+      log('RT ch status:', status)
     })
     ch.on('broadcast', { event: 'webrtc' }, async ({ payload }) => {
       const pc = pcRef.current
       if (!pc) return
       try {
-        if (payload.type === 'offer' && role === 'viewer') {
-          await pc.setRemoteDescription(payload.sdp)
-          const answer = await pc.createAnswer()
-          await pc.setLocalDescription(answer)
-          ch.send({ type: 'broadcast', event: 'webrtc', payload: { type: 'answer', sdp: pc.localDescription } })
-        } else if (payload.type === 'answer' && role === 'caster') {
-          await pc.setRemoteDescription(payload.sdp)
-        } else if (payload.type === 'ice') {
-          await pc.addIceCandidate(payload.candidate)
+        switch (payload.type) {
+          case 'ping': {
+            // Viewer prosi o ofertę → telefon odsyła ostatnią/aktualną
+            if (role === 'caster' && lastOfferRef.current) {
+              log('RX ping → TX offer')
+              ch.send({ type: 'broadcast', event: 'webrtc', payload: { type: 'offer', sdp: lastOfferRef.current } })
+            }
+            break
+          }
+          case 'offer': {
+            if (role === 'viewer') {
+              log('RX offer → setRemote + createAnswer')
+              await pc.setRemoteDescription(payload.sdp)
+              const answer = await pc.createAnswer()
+              await pc.setLocalDescription(answer)
+              ch.send({ type: 'broadcast', event: 'webrtc', payload: { type: 'answer', sdp: pc.localDescription } })
+              log('TX answer')
+            }
+            break
+          }
+          case 'answer': {
+            if (role === 'caster') {
+              log('RX answer → setRemote')
+              await pc.setRemoteDescription(payload.sdp)
+            }
+            break
+          }
+          case 'ice': {
+            log('RX ice')
+            await pc.addIceCandidate(payload.candidate)
+            break
+          }
         }
       } catch (e) {
-        console.error('RTC signal error', e)
+        log('Signal err:', e.message)
       }
     })
     channelRef.current = ch
@@ -645,12 +677,12 @@ function SecretWebRTCPage({ onBack }) {
     setRole('caster')
     const pc = await makePC()
     pcRef.current = pc
-
     const ch = ensureChannel(room.trim())
 
     pc.onicecandidate = (e) => {
       if (e.candidate) {
         ch.send({ type: 'broadcast', event: 'webrtc', payload: { type: 'ice', candidate: e.candidate } })
+        log('TX ice')
       }
     }
 
@@ -668,7 +700,9 @@ function SecretWebRTCPage({ onBack }) {
 
     const offer = await pc.createOffer()
     await pc.setLocalDescription(offer)
+    lastOfferRef.current = pc.localDescription
     ch.send({ type: 'broadcast', event: 'webrtc', payload: { type: 'offer', sdp: pc.localDescription } })
+    log('TX offer (initial)')
   }
 
   async function startViewer() {
@@ -676,12 +710,12 @@ function SecretWebRTCPage({ onBack }) {
     setRole('viewer')
     const pc = await makePC()
     pcRef.current = pc
-
     const ch = ensureChannel(room.trim())
 
     pc.onicecandidate = (e) => {
       if (e.candidate) {
         ch.send({ type: 'broadcast', event: 'webrtc', payload: { type: 'ice', candidate: e.candidate } })
+        log('TX ice')
       }
     }
 
@@ -693,8 +727,12 @@ function SecretWebRTCPage({ onBack }) {
       videoRef.current.playsInline = true
       try { await videoRef.current.play(); setNeedsManualPlay(false) }
       catch { setNeedsManualPlay(true) }
+      log('ontrack stream')
     }
-    // Viewer czeka na "offer" z telefonu, reszta idzie w on('broadcast'...)
+
+    // Poproś caster o aktualny offer (jeśli dołączyłeś później)
+    ch.send({ type: 'broadcast', event: 'webrtc', payload: { type: 'ping' } })
+    log('TX ping (request offer)')
   }
 
   async function switchCamera() {
@@ -714,6 +752,7 @@ function SecretWebRTCPage({ onBack }) {
         videoRef.current.srcObject = newStream
         try { await videoRef.current.play() } catch {}
       }
+      log('camera switched')
     } catch {
       alert('Nie udało się przełączyć kamery.')
     }
@@ -724,7 +763,9 @@ function SecretWebRTCPage({ onBack }) {
     try { localStreamRef.current?.getTracks()?.forEach(t=>t.stop()) } catch {}
     try { channelRef.current?.unsubscribe?.() } catch {}
     pcRef.current = null; localStreamRef.current = null; channelRef.current = null
+    lastOfferRef.current = null
     setRole('idle'); setNeedsManualPlay(false); setPcState('new')
+    log('stopped')
   }
 
   async function manualPlay() {
@@ -735,7 +776,7 @@ function SecretWebRTCPage({ onBack }) {
     <main className="min-h-screen bg-gradient-to-b from-slate-50 to-slate-100 p-4">
       <div className="max-w-2xl mx-auto">
         <header className="flex items-center justify-between">
-          <h1 className="text-2xl font-bold">Kamerka (1 okno, auto-połączenie)</h1>
+          <h1 className="text-2xl font-bold">Kamerka (auto-połączenie)</h1>
           <button onClick={()=>{ stopAll(); onBack(); }} className="px-3 py-2 rounded-xl bg-gray-200 hover:bg-gray-300">← Wróć</button>
         </header>
 
@@ -769,12 +810,20 @@ function SecretWebRTCPage({ onBack }) {
             )}
           </div>
 
-          <p className="text-xs text-gray-500 mt-4">
-            Połącz urządzenia wpisując tę samą nazwę pokoju. Supabase Realtime wymienia sygnały (Offer/Answer/ICE) automatycznie.
-            Metered dostarcza TURN/STUN, więc połączenie działa także między różnymi sieciami.
+          <details className="mt-3">
+            <summary className="text-sm cursor-pointer">Pokaż log</summary>
+            <pre className="text-xs bg-slate-50 border rounded p-2 max-h-64 overflow-auto">
+{logLines.map((l,i)=>(<div key={i}>{l}</div>))}
+            </pre>
+          </details>
+
+          <p className="text-xs text-gray-500 mt-3">
+            Wpisz tę samą nazwę pokoju na telefonie i komputerze. Viewer wysyła <code>ping</code>, a telefon dosyła <code>offer</code> automatycznie.
+            Połączenie przez TURN/STUN z Metered; sygnalizacja przez Supabase Realtime.
           </p>
         </section>
       </div>
     </main>
   )
 }
+
