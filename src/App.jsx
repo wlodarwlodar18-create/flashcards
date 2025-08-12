@@ -354,7 +354,7 @@ export default function App() {
     return (
       <div className="mt-4">
         <div
-          className={`w-full rounded-2xl shadow p-5 min-h[150px] min-h-[150px] flex items-center justify-center text-center border relative ${cardBg}`}
+          className={`w-full rounded-2xl shadow p-5 min-h-[150px] flex items-center justify-center text-center border relative ${cardBg}`}
           onClick={() => setShowBack(s=>!s)}
           title="Kliknij, aby przełączyć front/back"
         >
@@ -399,7 +399,7 @@ export default function App() {
           <h1 className="text-2xl font-bold">Fiszki – logowanie</h1>
           <p className="text-sm text-gray-600 mt-2">Podaj e-mail (magic link) albo zaloguj hasłem właściciela.</p>
 
-        <form onSubmit={signInWithEmail} className="mt-4 space-y-3">
+          <form onSubmit={signInWithEmail} className="mt-4 space-y-3">
             <input type="email" required placeholder="twoj@email.pl" value={email} onChange={(e)=>setEmail(e.target.value)} className="w-full border rounded-xl px-3 py-2 h-10"/>
             <button disabled={loading} className="w-full rounded-xl px-4 h-10 bg-black text-white disabled:opacity-50">{loading?'Wysyłanie…':'Wyślij link'}</button>
           </form>
@@ -638,54 +638,63 @@ function SecretWebRTCPage({ onBack }) {
     return { video, audio: false }
   }
 
+  // czekamy na SUBSCRIBED zanim zwrócimy kanał
   function ensureChannel(roomName) {
-    if (channelRef.current) return channelRef.current
-    const ch = supabase.channel(`webrtc:${roomName}`, { config: { broadcast: { self: false } } })
-    ch.subscribe((status) => {
-      log('RT ch status:', status)
-    })
-    ch.on('broadcast', { event: 'webrtc' }, async ({ payload }) => {
-      const pc = pcRef.current
-      if (!pc) return
-      try {
-        switch (payload.type) {
-          case 'ping': {
-            if (role === 'caster' && lastOfferRef.current) {
-              log('RX ping → TX offer')
-              ch.send({ type: 'broadcast', event: 'webrtc', payload: { type: 'offer', sdp: lastOfferRef.current } })
-            }
-            break
-          }
-          case 'offer': {
-            if (role === 'viewer') {
-              log('RX offer → setRemote + createAnswer')
-              await pc.setRemoteDescription(payload.sdp)
-              const answer = await pc.createAnswer()
-              await pc.setLocalDescription(answer)
-              ch.send({ type: 'broadcast', event: 'webrtc', payload: { type: 'answer', sdp: pc.localDescription } })
-              log('TX answer')
-            }
-            break
-          }
-          case 'answer': {
-            if (role === 'caster') {
-              log('RX answer → setRemote')
-              await pc.setRemoteDescription(payload.sdp)
-            }
-            break
-          }
-          case 'ice': {
-            log('RX ice')
-            await pc.addIceCandidate(payload.candidate)
-            break
-          }
+    if (channelRef.current) return Promise.resolve(channelRef.current)
+
+    return new Promise((resolve) => {
+      const ch = supabase.channel(`webrtc:${roomName}`, { config: { broadcast: { self: false } } })
+
+      ch.subscribe((status) => {
+        log('RT ch status:', status)
+        if (status === 'SUBSCRIBED') {
+          resolve(ch)
         }
-      } catch (e) {
-        log('Signal err:', e.message)
-      }
+      })
+
+      ch.on('broadcast', { event: 'webrtc' }, async ({ payload }) => {
+        const pc = pcRef.current
+        if (!pc) return
+        try {
+          switch (payload.type) {
+            case 'ping': {
+              if (role === 'caster' && lastOfferRef.current) {
+                log('RX ping → TX offer')
+                ch.send({ type: 'broadcast', event: 'webrtc', payload: { type: 'offer', sdp: lastOfferRef.current } })
+              }
+              break
+            }
+            case 'offer': {
+              if (role === 'viewer') {
+                log('RX offer → setRemote + createAnswer')
+                await pc.setRemoteDescription(payload.sdp)
+                const answer = await pc.createAnswer()
+                await pc.setLocalDescription(answer)
+                ch.send({ type: 'broadcast', event: 'webrtc', payload: { type: 'answer', sdp: pc.localDescription } })
+                log('TX answer')
+              }
+              break
+            }
+            case 'answer': {
+              if (role === 'caster') {
+                log('RX answer → setRemote')
+                await pc.setRemoteDescription(payload.sdp)
+              }
+              break
+            }
+            case 'ice': {
+              log('RX ice')
+              await pc.addIceCandidate(payload.candidate)
+              break
+            }
+          }
+        } catch (e) {
+          log('Signal err:', e.message)
+        }
+      })
+
+      channelRef.current = ch
     })
-    channelRef.current = ch
-    return ch
   }
 
   async function startCaster() {
@@ -693,7 +702,8 @@ function SecretWebRTCPage({ onBack }) {
     setRole('caster')
     const pc = await makePC()
     pcRef.current = pc
-    const ch = ensureChannel(room.trim())
+
+    const ch = await ensureChannel(room.trim()) // czekamy aż SUBSCRIBED
 
     pc.onicecandidate = (e) => {
       if (e.candidate) {
@@ -702,16 +712,14 @@ function SecretWebRTCPage({ onBack }) {
       }
     }
 
-    // TYLKO addTrack — bez addTransceiver, by nie dublować m-line
+    // tylko addTrack — brak addTransceiver, żeby nie dublować m-line
     const stream = await navigator.mediaDevices.getUserMedia(camConstraints())
     localStreamRef.current = stream
     const videoTrack = stream.getVideoTracks()[0]
     pc.addTrack(videoTrack, stream)
 
-    // Preferuj H.264 (Safari/relay)
     await preferH264(pc)
 
-    // Podgląd własny
     if (videoRef.current) {
       videoRef.current.srcObject = stream
       videoRef.current.muted = true
@@ -724,6 +732,17 @@ function SecretWebRTCPage({ onBack }) {
     lastOfferRef.current = pc.localDescription
     ch.send({ type: 'broadcast', event: 'webrtc', payload: { type: 'offer', sdp: pc.localDescription } })
     log('TX offer (initial)')
+
+    // co 3 s dopychamy offer, dopóki nie ustawimy remoteDescription (czyli nie ma jeszcze answer)
+    const resend = setInterval(() => {
+      if (!pcRef.current) { clearInterval(resend); return }
+      const stable = pcRef.current.signalingState === 'stable' && pcRef.current.currentRemoteDescription
+      if (stable) { clearInterval(resend); return }
+      if (lastOfferRef.current) {
+        log('Re-TX offer (retry)')
+        ch.send({ type: 'broadcast', event: 'webrtc', payload: { type: 'offer', sdp: lastOfferRef.current } })
+      }
+    }, 3000)
   }
 
   async function startViewer() {
@@ -731,7 +750,8 @@ function SecretWebRTCPage({ onBack }) {
     setRole('viewer')
     const pc = await makePC()
     pcRef.current = pc
-    const ch = ensureChannel(room.trim())
+
+    const ch = await ensureChannel(room.trim()) // czekamy aż SUBSCRIBED
 
     pc.onicecandidate = (e) => {
       if (e.candidate) {
@@ -740,7 +760,6 @@ function SecretWebRTCPage({ onBack }) {
       }
     }
 
-    // Viewer: tylko odbieramy — ontrack ustawi video
     pc.ontrack = async (e) => {
       const stream = e.streams[0]
       if (!videoRef.current) return
@@ -751,9 +770,13 @@ function SecretWebRTCPage({ onBack }) {
       log('ontrack stream')
     }
 
-    // Poproś o aktualny offer (dołączenie później)
-    ch.send({ type: 'broadcast', event: 'webrtc', payload: { type: 'ping' } })
-    log('TX ping (request offer)')
+    // ping co 2 s, aż dostaniemy offer i ustawimy remote
+    const pingInt = setInterval(() => {
+      if (!pcRef.current) { clearInterval(pingInt); return }
+      if (pcRef.current.remoteDescription) { clearInterval(pingInt); return }
+      ch.send({ type: 'broadcast', event: 'webrtc', payload: { type: 'ping' } })
+      log('TX ping (request offer)')
+    }, 2000)
   }
 
   async function switchCamera() {
@@ -839,8 +862,8 @@ function SecretWebRTCPage({ onBack }) {
           </details>
 
           <p className="text-xs text-gray-500 mt-3">
-            Wpisz tę samą nazwę pokoju na telefonie i komputerze. Viewer wysyła <code>ping</code>, a telefon dosyła <code>offer</code> automatycznie.
-            Połączenie przez TURN/STUN z Metered; sygnalizacja przez Supabase Realtime.
+            Wpisz tę samą nazwę pokoju na telefonie i komputerze. Viewer pinguje co 2s, a telefon re-wysyła ofertę co 3s do czasu uzyskania odpowiedzi.
+            Sygnalizacja: Supabase Realtime. TURN/STUN: Metered.
           </p>
         </section>
       </div>
