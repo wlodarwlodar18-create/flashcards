@@ -9,7 +9,7 @@ const supabaseAnon = import.meta.env.VITE_SUPABASE_ANON_KEY || ''
 const ownerEmailEnv = import.meta.env.VITE_OWNER_EMAIL || '' // ← e-mail właściciela (ENV)
 const supabase = createClient(supabaseUrl, supabaseAnon)
 
-/* ===== Utils ===== */
+/* ===== Utils ====== */
 function shuffle(arr) {
   const a = [...arr]
   for (let i = a.length - 1; i > 0; i--) {
